@@ -1,6 +1,6 @@
 {
   "meta": {
-    "timestamp": "2026-06-20T09:42:09+00:00",
+    "timestamp": "2026-06-21T19:19:33+00:00",
     "params": {
       "k": 11,
       "hfrac": 0.1,
@@ -15,11 +15,11 @@
   "results": [
     {
       "sketcher": "naive",
-      "index_sec": 0.2864,
-      "ref_kmers_per_sec": 349209,
+      "index_sec": 0.3344,
+      "ref_kmers_per_sec": 299032,
       "indexed_kmers": 19099,
-      "map_sec": 0.5284,
-      "reads_per_sec": 946,
+      "map_sec": 0.6174,
+      "reads_per_sec": 810,
       "mapped": 492,
       "mapped_frac": 0.984,
       "correct": 492,
@@ -27,11 +27,11 @@
     },
     {
       "sketcher": "poly",
-      "index_sec": 0.1147,
-      "ref_kmers_per_sec": 871770,
+      "index_sec": 0.1663,
+      "ref_kmers_per_sec": 601174,
       "indexed_kmers": 19055,
-      "map_sec": 0.2453,
-      "reads_per_sec": 2038,
+      "map_sec": 0.3938,
+      "reads_per_sec": 1270,
       "mapped": 491,
       "mapped_frac": 0.982,
       "correct": 491,
@@ -39,15 +39,15 @@
     },
     {
       "sketcher": "nthash",
-      "index_sec": 0.2669,
-      "ref_kmers_per_sec": 374607,
-      "indexed_kmers": 10296,
-      "map_sec": 0.7354,
-      "reads_per_sec": 680,
-      "mapped": 490,
-      "mapped_frac": 0.98,
-      "correct": 490,
-      "accuracy": 0.98
+      "index_sec": 0.2012,
+      "ref_kmers_per_sec": 496953,
+      "indexed_kmers": 18903,
+      "map_sec": 0.3828,
+      "reads_per_sec": 1306,
+      "mapped": 493,
+      "mapped_frac": 0.986,
+      "correct": 493,
+      "accuracy": 0.986
     }
   ]
 }

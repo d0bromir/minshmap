@@ -1,6 +1,6 @@
 # minSHmap cross-language benchmark (Python vs. C++)
 
-- generated: 2026-06-20T18:47:33+00:00
+- generated: 2026-06-21T19:19:58+00:00
 - reference: 2 segment(s), 100,000 bp
 - reads: 500 x ~305 bp
 - params: {'k': 11, 'hfrac': 0.1, 'theta': 0.4, 'min_diff': 0.02}
@@ -9,14 +9,14 @@
 
 | sketcher | lang | index s | ref bp/s | map s | reads/s | mapped | accuracy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| naive | python | 0.4444 | 225012 | 0.5364 | 932 | 0.984 | 0.984 |
-| naive | cpp | 0.009 | 11087703 | 0.0127 | 39487 | 0.978 | 0.978 |
-| poly | python | 0.1168 | 856476 | 0.2386 | 2096 | 0.982 | 0.982 |
-| poly | cpp | 0.0089 | 11297009 | 0.0151 | 33101 | 0.982 | 0.982 |
-| nthash | python | 0.2261 | 442335 | 1.0182 | 491 | 0.98 | 0.98 |
-| nthash | cpp | 0.0024 | 41385589 | 0.025 | 20013 | 0.98 | 0.98 |
+| naive | python | 0.3119 | 320658 | 0.4668 | 1071 | 0.984 | 0.984 |
+| naive | cpp | 0.0065 | 15333895 | 0.0142 | 35285 | 0.978 | 0.978 |
+| poly | python | 0.147 | 680489 | 0.3016 | 1658 | 0.982 | 0.982 |
+| poly | cpp | 0.005 | 20179191 | 0.0165 | 30344 | 0.982 | 0.982 |
+| nthash | python | 0.2044 | 489269 | 0.4013 | 1246 | 0.986 | 0.986 |
+| nthash | cpp | 0.0033 | 30176836 | 0.0117 | 42894 | 0.986 | 0.986 |
 
 C++ mapping speedup over Python (reads/s):
-  - naive: 42.4x
-  - poly: 15.8x
-  - nthash: 40.8x
+  - naive: 32.9x
+  - poly: 18.3x
+  - nthash: 34.4x
