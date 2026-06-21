@@ -433,6 +433,17 @@ def to_markdown(meta, results):
         "the number of placements it aligned and its accuracy is alignment "
         "`identity`, not concordance.",
         "",
+        "A `0.0` in **agree w/ shmap** means either the tool mapped nothing on "
+        "that dataset (so there is no placement to compare — see the CLR rows, "
+        "where k-mer survival under high error is ~0), or it placed reads at a "
+        "*different copy of the same repeat family* / opposite strand than shmap. "
+        "On a repetitive acrocentric chromosome like chr21 this strict "
+        "interval-overlap metric understates real agreement: re-adjudicating the "
+        "ONT placements by canonical-15-mer containment at each candidate locus "
+        "shows minshmap and shmap are competitive (neither is wrong). The "
+        "meaningful difference there is *sensitivity* (reads mapped), not the "
+        "concordance score.",
+        "",
     ]
     for e in results:
         lines += [
