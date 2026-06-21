@@ -1,0 +1,17 @@
+dataset,platform,tool,mapped,mapped_frac,wall_sec,reads_per_sec,agree_with_shmap,identity
+hifi,PacBio HiFi,minshmap-py-nthash,9,0.0045,1163.772,2,0.471,
+hifi,PacBio HiFi,minshmap-cpp-naive,11,0.0055,14.412,139,0.529,
+hifi,PacBio HiFi,minshmap-cpp-poly,10,0.005,13.396,149,0.529,
+hifi,PacBio HiFi,minshmap-cpp-nthash,9,0.0045,11.639,172,0.471,
+hifi,PacBio HiFi,shmap,17,0.0085,7.383,271,,
+hifi,PacBio HiFi,minsh,1,,11.693,0.086,,0.8691
+ont,Oxford Nanopore,minshmap-py-nthash,8,0.004,1022.893,2,0.0,
+ont,Oxford Nanopore,minshmap-cpp-naive,11,0.0055,19.568,102,0.062,
+ont,Oxford Nanopore,minshmap-cpp-poly,10,0.005,15.415,130,0.031,
+ont,Oxford Nanopore,minshmap-cpp-nthash,8,0.004,13.691,146,0.0,
+ont,Oxford Nanopore,shmap,32,0.016,28.932,69,,
+clr,PacBio CLR,minshmap-py-nthash,0,0.0,176.842,11,0.0,
+clr,PacBio CLR,minshmap-cpp-naive,0,0.0,7.1,282,0.0,
+clr,PacBio CLR,minshmap-cpp-poly,0,0.0,6.135,326,0.0,
+clr,PacBio CLR,minshmap-cpp-nthash,0,0.0,5.151,388,0.0,
+clr,PacBio CLR,shmap,2,0.001,1.751,1142,,
