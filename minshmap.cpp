@@ -1,8 +1,12 @@
-// minSHmap (C++) - a line-for-line port of minshmap.py: same algorithm, byte-identical
-// output. The only extra is `-j` (parallel reads). Keep it in lockstep with minshmap.py.
+// minSHmap (C++) - sketch-based read mapper. Same algorithm as minshmap.py (the
+// pedagogical reference), but optimized: flat CSR hit layout (cache-friendly),
+// ankerl::unordered_dense maps, reserve(), and `-j` (parallel reads). Output is
+// identical to minshmap.py for the same hash; map_read order matches sorted(cand).
 // sketch: FracMinHash rolling ntHash | index: hash->[(seg,pos,strand)] | map: rank read
 // k-mers rarest-first, scatter rarest into overlapping windows, score containment, prune
-// via sh = 1-(used-matches)/m. Build: g++ -O3 -std=c++17 -march=native -pthread minshmap.cpp
+// via sh = 1-(used-matches)/m.
+// Build: g++ -O3 -std=c++17 -march=native -pthread -I ../shmap/ext/unordered_dense/include \
+//        -o minshmap minshmap.cpp
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -11,56 +15,85 @@
 #include <sstream>
 #include <string>
 #include <thread>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
+#include "ankerl/unordered_dense.h"
 using u64 = uint64_t;
 using std::string;
 using std::vector;
 static const u64 MASK64 = ~u64(0);
-static u64 LUT_FW[256], LUT_RC[256];  // a k-mer and its rev-comp share a hash
-static void init_lut() {
-    LUT_FW['A'] = 0x3C8BFBB395C60474ULL; LUT_FW['C'] = 0x3193C18562A02B4CULL;
-    LUT_FW['G'] = 0x20323ED082572324ULL; LUT_FW['T'] = 0x295549F54BE24456ULL;
-    LUT_RC['A'] = LUT_FW['T']; LUT_RC['C'] = LUT_FW['G'];
-    LUT_RC['G'] = LUT_FW['C']; LUT_RC['T'] = LUT_FW['A'];
+// SplitMix64 finalizer: turns a packed k-mer code into a well-mixed 64-bit hash.
+static inline u64 mix(u64 x) {
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    return x ^ (x >> 31);
 }
-static inline u64 rotl(u64 x, int r) { r &= 63; return r ? (x << r) | (x >> (64 - r)) : x; }
-static inline u64 rotr(u64 x, int r) { r &= 63; return r ? (x >> r) | (x << (64 - r)) : x; }
+static inline int b2(unsigned char c) { return c == 'C' ? 1 : c == 'G' ? 2 : c == 'T' ? 3 : 0; }  // complement(b)=3-b
 struct SkEntry { int pos; u64 h; int strand; };  // strand: 0 forward, 1 rev-comp
 
-// Kept (pos, hash, strand) k-mers; mirrors minshmap.py sketch(). O(len).
+// Kept (pos, hash, strand) k-mers; mirrors minshmap.py sketch(). k <= 32. O(len).
 static vector<SkEntry> sketch(const string &seq, int k, double hfrac) {
     vector<SkEntry> out;
     int n = (int)seq.size();
     if (n < k) return out;
-    u64 thr = hfrac >= 1.0 ? MASK64 : (u64)(hfrac * 18446744073709551616.0), h_fw = 0, h_rc = 0;
-    for (int t = 0; t < k; ++t) {                      // hash of the first window
-        h_fw ^= rotl(LUT_FW[(unsigned char)seq[t]], k - 1 - t);
-        h_rc ^= rotl(LUT_RC[(unsigned char)seq[t]], t);
+    u64 thr = hfrac >= 1.0 ? MASK64 : (u64)(hfrac * 18446744073709551616.0);  // hfrac * 2^64
+    u64 mask = k >= 32 ? MASK64 : ((u64(1) << (2 * k)) - 1);
+    int sh = 2 * (k - 1);
+    u64 fw = 0, rc = 0;                                 // forward + reverse-complement 2-bit codes
+    for (int t = 0; t < k; ++t) {                       // pack the first window
+        int b = b2(seq[t]);
+        fw = ((fw << 2) | b) & mask;
+        rc = (rc >> 2) | ((u64)(3 - b) << sh);
     }
-    for (int i = 0; i + k <= n; ++i) {
-        u64 h = h_fw <= h_rc ? h_fw : h_rc;            // canonical: min over both strands
-        if (h <= thr) out.push_back({i, h, h_fw <= h_rc ? 0 : 1});
-        if (i + k < n) {                               // roll the window one base
-            unsigned char o = seq[i], in = seq[i + k];
-            h_fw = rotl(h_fw, 1) ^ rotl(LUT_FW[o], k) ^ LUT_FW[in];
-            h_rc = rotr(h_rc, 1) ^ rotr(LUT_RC[o], 1) ^ rotl(LUT_RC[in], k - 1);
-        }
+    for (int i = 0;; ++i) {
+        u64 c = fw <= rc ? fw : rc;                     // canonical k-mer (min over both strands)
+        if (u64 h = mix(c); h <= thr) out.push_back({i, h, fw <= rc ? 0 : 1});
+        if (i + k >= n) break;
+        int b = b2(seq[i + k]);                          // roll the window one base
+        fw = ((fw << 2) | b) & mask;
+        rc = (rc >> 2) | ((u64)(3 - b) << sh);
     }
     return out;
 }
 struct Hit { int sid; int pos; int strand; };
 struct Segment { string name; int length; };
-struct Index { std::unordered_map<u64, vector<Hit>> h2hits; vector<Segment> segments; };
+// CSR layout: all hits for a hash are contiguous in `hits`; `id` maps hash -> dense
+// slot, and slot s spans hits[off[s] .. off[s+1]). One allocation instead of a vector
+// per hash -> far fewer cache misses while scanning a seed's hits.
+struct Index {
+    ankerl::unordered_dense::map<u64, uint32_t> id;
+    vector<uint32_t> off;
+    vector<Hit> hits;
+    vector<Segment> segments;
+    const Hit *range(u64 h, int &n) const {            // hits for hash h (n = count)
+        auto it = id.find(h);
+        if (it == id.end()) { n = 0; return nullptr; }
+        uint32_t s = it->second;
+        n = (int)(off[s + 1] - off[s]);
+        return hits.data() + off[s];
+    }
+};
 
 static Index build_index(const vector<std::pair<string, string>> &refs, int k, double hfrac) {
-    Index idx;                                         // hash -> [(segm_id, pos, strand), ...]
+    Index idx;
+    vector<std::pair<u64, Hit>> raw;                   // (hash, hit) in reference order
     for (size_t sid = 0; sid < refs.size(); ++sid) {
         idx.segments.push_back({refs[sid].first, (int)refs[sid].second.size()});
         for (const auto &e : sketch(refs[sid].second, k, hfrac))
-            idx.h2hits[e.h].push_back({(int)sid, e.pos, e.strand});
+            raw.push_back({e.h, {(int)sid, e.pos, e.strand}});
     }
+    idx.id.reserve(raw.size());
+    vector<uint32_t> cnt;                              // dense slot ids in first-seen order
+    for (const auto &pr : raw) {
+        auto it = idx.id.try_emplace(pr.first, (uint32_t)cnt.size()).first;
+        if (it->second == (uint32_t)cnt.size()) cnt.push_back(0);
+        ++cnt[it->second];
+    }
+    idx.off.assign(cnt.size() + 1, 0);
+    for (size_t s = 0; s < cnt.size(); ++s) idx.off[s + 1] = idx.off[s] + cnt[s];
+    idx.hits.resize(raw.size());
+    vector<uint32_t> cur(idx.off.begin(), idx.off.end() - 1);  // running write head per slot
+    for (const auto &pr : raw) idx.hits[cur[idx.id[pr.first]]++] = pr.second;  // stable in-slot order
     return idx;
 }
 struct Mapping { int sid; int t_start; int t_end; double score; int codir; bool ok = false; };
@@ -72,48 +105,61 @@ static Mapping map_read(const string &seq, const Index &idx, int k, double hfrac
     int m = (int)sk.size();                            // informative k-mers in the read
     if (m == 0) return best;
     int W = std::max((int)seq.size(), 1);              // candidate windows are read-length-wide
-    struct Seed { const vector<Hit> *hits; int n_hits; int rstrand; };
-    std::unordered_set<u64> seen;
+    struct Seed { const Hit *hits; int n_hits; int rstrand; };
+    ankerl::unordered_dense::set<u64> seen;
     vector<Seed> seeds;
+    seen.reserve(sk.size());
+    seeds.reserve(sk.size());
     for (const auto &e : sk) {                         // one seed per distinct read k-mer
         if (!seen.insert(e.h).second) continue;
-        auto it = idx.h2hits.find(e.h);
-        const vector<Hit> *hits = it == idx.h2hits.end() ? nullptr : &it->second;
-        seeds.push_back({hits, hits ? (int)hits->size() : 0, e.strand});
+        int nh;
+        const Hit *hp = idx.range(e.h, nh);
+        seeds.push_back({hp, nh, e.strand});
     }
     std::stable_sort(seeds.begin(), seeds.end(),       // rarest first (stable: ties keep order)
                      [](const Seed &a, const Seed &b) { return a.n_hits < b.n_hits; });
     int S = (int)((1.0 - theta) * m) + 1;              // this many rare seeds are enough
-    std::unordered_set<long long> cand;                // window keys: (sid<<32)|bucket
+    ankerl::unordered_dense::map<long long, int> cand; // window key (sid<<32)|bucket -> votes
     for (int i = 0; i < S && i < (int)seeds.size(); ++i)
-        if (seeds[i].hits)
-            for (const Hit &hit : *seeds[i].hits) {    // overlapping buckets b and b-1
-                int b = hit.pos / W;
-                cand.insert(((long long)hit.sid << 32) | (unsigned)b);
-                if (b > 0) cand.insert(((long long)hit.sid << 32) | (unsigned)(b - 1));
-            }
-    vector<long long> order(cand.begin(), cand.end());
-    std::sort(order.begin(), order.end());             // deterministic, matches Python sorted(cand)
-    for (long long key : order) {                      // score each window, keep the best
+        for (int j = 0; j < seeds[i].n_hits; ++j) {    // overlapping buckets b and b-1
+            const Hit &hit = seeds[i].hits[j];
+            int b = hit.pos / W;
+            ++cand[((long long)hit.sid << 32) | (unsigned)b];
+            if (b > 0) ++cand[((long long)hit.sid << 32) | (unsigned)(b - 1)];
+        }
+    vector<std::pair<int, long long>> order;           // (votes, key); score promising windows first
+    order.reserve(cand.size());
+    for (const auto &kv : cand) order.push_back({kv.second, kv.first});
+    std::sort(order.begin(), order.end(), [](const auto &a, const auto &b) {
+        return a.first != b.first ? a.first > b.first : a.second < b.second;  // votes desc, key asc
+    });
+    long long best_key = 0;                            // tie-break on key -> result is order-independent
+    for (const auto &ok : order) {
+        long long key = ok.second;
         int sid = (int)(key >> 32), b = (int)(unsigned)(key & 0xffffffffLL);
         int lo = b * W, hi = (b + 2) * W, used = 0, matches = 0, codir = 0, r_min = -1, r_max = -1;
-        bool pruned = false;
+        double target = best.ok ? std::max(theta, best.score) : theta;  // a window that can't beat
+        bool pruned = false;                                            // best is useless -> prune it
         for (const Seed &s : seeds) {                  // add seeds rarest-first, prune early
             ++used;
-            if (s.hits)
-                for (const Hit &hit : *s.hits)
-                    if (hit.sid == sid && lo <= hit.pos && hit.pos < hi) {  // count once per k-mer
-                        ++matches;
-                        codir += (hit.strand == s.rstrand) ? 1 : -1;
-                        r_min = r_min < 0 ? hit.pos : std::min(r_min, hit.pos);
-                        r_max = std::max(r_max, hit.pos);
-                        break;
-                    }
-            if (1.0 - double(used - matches) / m < theta) { pruned = true; break; }  // SEED HEURISTIC
+            for (int j = 0; j < s.n_hits; ++j) {
+                const Hit &hit = s.hits[j];
+                if (hit.sid == sid && lo <= hit.pos && hit.pos < hi) {  // count once per k-mer
+                    ++matches;
+                    codir += (hit.strand == s.rstrand) ? 1 : -1;
+                    r_min = r_min < 0 ? hit.pos : std::min(r_min, hit.pos);
+                    r_max = std::max(r_max, hit.pos);
+                    break;
+                }
+            }
+            if (1.0 - double(used - matches) / m < target) { pruned = true; break; }  // SEED HEURISTIC
         }
         double score = double(matches) / m;            // containment = fraction of read k-mers hit
-        if (!pruned && score >= theta && (!best.ok || score > best.score))
+        if (!pruned && score >= theta &&
+            (!best.ok || score > best.score || (score == best.score && key < best_key))) {
             best = {sid, r_min, r_max + k, score, codir, true};
+            best_key = key;
+        }
     }
     return best;
 }
@@ -171,7 +217,6 @@ static void parallel_for(size_t n, int threads, F work) {
 }
 
 int main(int argc, char **argv) {
-    init_lut();
     int k = 15, threads = 1;
     double hfrac = 0.05, theta = 0.9;
     vector<string> pos;

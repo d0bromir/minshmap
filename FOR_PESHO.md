@@ -8,10 +8,10 @@
 ## (а) По-просто ядро за педагогика — НАПРАВЕНО
 
 Сега има **само една версия** — педагогичната. [minshmap.py](minshmap.py): **154
-реда**, само същината — един sketcher (rolling ntHash), `build_index`
+реда**, само същината — един sketcher (2-битов rolling код + SplitMix64), `build_index`
 (dict hash→позиции), `map_read` (rarest-first → overlapping buckets →
 seed-heuristic prune → containment), `read_fasta`, минимален PAF, CLI. Махнати са
-трите неща, за които се разбрахме: 3-те sketcher-а (остава само `nthash`),
+трите неща, за които се разбрахме: 3-те sketcher-а (остава само един), 
 `max_matches`/`max_seeds`, и second-best/`mapq` — `map_read` връща **едно
 най-добро попадение**. Логиката е изчистена (`for/else` вместо sentinel), за да се
 чете ред-по-ред. [minshmap.cpp](minshmap.cpp) е line-for-line порт на същото
@@ -24,25 +24,15 @@ seed-heuristic prune → containment), `read_fasta`, минимален PAF, CLI
 - Принципът е същият като при `minSH banded`: минимално, винаги-вярно ядро + тънки
   незадължителни слоеве отгоре. Учащият първо чете ~150 реда чиста идея.
 
-## (б) Output-preserving паралелизъм — НАПРАВЕНО + ПРЕМЕРЕНО
+## (б) Output-preserving паралелизъм — НЕ го броя като печалба
 
-Добавен е `-j/--threads` в `minshmap.cpp` (std::thread, без нови зависимости).
-Рийдовете са независими; всеки thread пише в собствен сегмент на изхода и
-редовете се печатат в оригинален ред → изходът е **бит-в-бит идентичен** с
-`-j 1` (проверено с хешове на PAF файловете, и при кратки, и при дълги рийдове).
-
-Скалиране (3 Mb ref, 20000 рийда по 3 kb, best-of-3, 8 логически ядра):
-
-| threads | reads/s | speedup |
-|--------:|--------:|--------:|
-| 1 | 8108 | 1.00x |
-| 2 | 14338 | 1.77x |
-| 4 | 23313 | 2.88x |
-| 8 | 33903 | **4.18x** |
-
-Почти линейно до броя физически ядра, после намалява (hyperthreading). Това е
-„безплатната" печалба, която не променя изхода — и тя е ~брой-ядра, не „×много"
-от един thread, точно както писах.
+Прав беше: `-j` в [minshmap.cpp](minshmap.cpp) е просто **базовият наивен
+read-level паралелизъм** — различни рийдове на различни ядра. Всеки read
+mapper го има по подразбиране и той е **базата за сравнение**, не профит.
+Затова не го представям като оптимизация. Реална печалба би била паралелизъм,
+**съвместим с този базов** — напр. bit-wise / SIMD в inner loop-а — който се добавя
+ОТГОРЕ върху read-level паралелизма. `-j` остава само за удобство (изходът е
+бит-в-бит идентичен с `-j 1`, проверено), но не е част от „печалбата".
 
 ## (в) Equal-sensitivity бенчмарк — НАПРАВЕНО, и ме ОПРОВЕРГА
 
@@ -91,9 +81,26 @@ map (ankerl/unordered_dense, каквато ти ползваш) + `reserve()` �
 
 ### Файлове
 - [minshmap.py](minshmap.py) — единствената (педагогична) версия, 154 реда (а).
-- [minshmap.cpp](minshmap.cpp) — line-for-line C++ порт + `-j` паралелизъм (б);
-  rebuild: `g++ -O3 -std=c++17 -march=native -pthread -o minshmap minshmap.cpp`.
+- [minshmap.cpp](minshmap.cpp) — оптимизираната C++ версия (същият алгоритъм и същия
+  изход като .py); `-j` е само базовият read-level паралелизъм (б); rebuild изисква
+  ankerl header: `g++ -O3 -std=c++17 -march=native -pthread -I ../shmap/ext/unordered_dense/include -o minshmap minshmap.cpp`.
 - [realworld/08_bench_cpp_only.py](realworld/08_bench_cpp_only.py) — бенчмарк само на
   minshmap-cpp, с pre-fill на shmap/minSH от baseline.
 - [realworld/07_bench_equal_sensitivity.py](realworld/07_bench_equal_sensitivity.py) + [realworld/results_rw/equal_sensitivity.md](realworld/results_rw/equal_sensitivity.md) — equal-work бенчмарк (в).
 - [ORIGINAL_SHMAP.md](ORIGINAL_SHMAP.md) — описанието на оригиналния алгоритъм.
+
+### Реалният headroom (output-preserving оптимизации) — НАПРАВЕНО
+Четирите неща по-долу са имплементирани. Изходът е идентичен между .py и .cpp; самият
+хеш се смени (т. „по-бърз хеш"), затова числата спрямо старата версия не са byte-identical,
+но py и cpp остават в lockstep. Резултат: **~2× throughput** на real-world бенчмарка
+(reads/s: hifi 212→446, ont 152→353, clr 257→772; mapped hifi 11→14, ont 8→12).
+- **Memory layout / cache** — индексът е пренаписан като CSR (`off[]` + плосък `hits[]`)
+  върху `ankerl::unordered_dense::map`; hit листите лежат съприлежно в паметта.
+- **По-бърз и по-чист хеш** — ръчните ntHash LUT-ове паднаха; сега: 2-битов rolling
+  canonical код + SplitMix64 finalizer (вдъхновено от бързия код на колегата:
+  [RagnarGrootKoerkamp/minimizers](https://github.com/RagnarGrootKoerkamp/minimizers),
+  който е Rust/SIMD — тук е чистият еквивалент в C++/Python).
+- **Ред на обхождане на bucket-ите** — прозорците се скорират по (гласове ↓, ключ ↑) и
+  prune-ът се стяга до `max(theta, best.score)`, така че best се вдига по-рано и реже
+  повече; изходът е запазен чрез явен tie-break (max score, min ключ).
+- **Index build** — по-бърза map + `reserve()` (CSR offsets вместо `unordered_map`).

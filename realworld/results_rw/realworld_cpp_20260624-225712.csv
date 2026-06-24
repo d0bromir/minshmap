@@ -1,0 +1,8 @@
+dataset,platform,tool,mapped,mapped_frac,wall_sec,reads_per_sec,agree_with_shmap,identity,source
+hifi,PacBio HiFi,minshmap-cpp,14,0.007,4.484,446,,,measured
+hifi,PacBio HiFi,shmap,17,0.0085,7.383,271,,,baseline
+hifi,PacBio HiFi,minsh,1,,11.693,0.086,,0.8691,baseline
+ont,Oxford Nanopore,minshmap-cpp,12,0.006,5.659,353,,,measured
+ont,Oxford Nanopore,shmap,32,0.016,28.932,69,,,baseline
+clr,PacBio CLR,minshmap-cpp,0,0.0,2.592,772,,,measured
+clr,PacBio CLR,shmap,2,0.001,1.751,1142,,,baseline
