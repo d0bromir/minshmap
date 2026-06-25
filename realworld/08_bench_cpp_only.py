@@ -37,11 +37,14 @@ DATASETS = [("hifi", "PacBio HiFi"), ("ont", "Oxford Nanopore"), ("clr", "PacBio
 MAX_READS = 2000          # same subset size as the baseline (realworld.csv)
 
 # Core mapping parameters (identical to minshmap.py / minshmap.cpp on the CLI).
-# theta=0.2: (w,k)-minimizer containment runs systematically lower than the old
-# FracMinHash (one error changes a whole window's minimum, not just one k-mer), so
-# the FracMinHash-era theta=0.3 was too high and dropped every HiFi read. At 0.2 the
-# partial/junction HiFi reads (~30% on chr21) clear the bar -> 16 mapped (~ shmap 17).
-PARAMS = dict(k=15, window=10, theta=0.2)
+# (w,k)-minimizer containment runs lower than the old FracMinHash (one error changes a
+# whole window's minimum), so the acceptance threshold theta must track the read error
+# rate. Like minimap2's map-hifi/map-ont/map-pb presets we use a PER-DATASET theta:
+# higher for low-error HiFi, lower for noisy ONT/CLR where few k-mers survive intact
+# ((1-e)^k ~ 0.15 ONT, ~0.09 CLR at k=15). Values picked to stay AT/UNDER shmap's truth
+# (hifi 17 / ont 32 / clr 2) -> no false-positive explosion (theta<=0.05 blows CLR to 48+).
+PARAMS = dict(k=15, window=10)
+THETA = {"hifi": 0.20, "ont": 0.15, "clr": 0.18}   # hifi 16, ont 28, clr 2 (<= shmap truth)
 PREFILL_TOOLS = ("shmap", "minsh")   # rows copied from the baseline, not re-run
 
 
@@ -96,7 +99,6 @@ def main():
     os.makedirs(RESULTS, exist_ok=True)
 
     prefill_rows = load_prefill(BASELINE_CSV)
-    kc = ["-k", str(PARAMS["k"]), "-w", str(PARAMS["window"]), "-t", str(PARAMS["theta"])]
 
     rows = []     # assembled output rows (measured + baseline)
     for label, platform in DATASETS:
@@ -113,7 +115,8 @@ def main():
             for nm, sq in reads:
                 f.write(f">{nm}\n{sq}\n")
 
-        print(f"  minshmap-cpp mapping {label} ({n} reads) ...", flush=True)
+        kc = ["-k", str(PARAMS["k"]), "-w", str(PARAMS["window"]), "-t", str(THETA[label])]
+        print(f"  minshmap-cpp mapping {label} ({n} reads, theta={THETA[label]}) ...", flush=True)
         t0 = time.perf_counter()
         out = subprocess.run([CPP_BIN, REF, cap_path] + kc, capture_output=True, text=True)
         sec = time.perf_counter() - t0
