@@ -1,12 +1,9 @@
-// minSHmap (C++) - sketch-based read mapper. Same algorithm as minshmap.py (the
-// pedagogical reference), but optimized: flat CSR hit layout (cache-friendly),
-// ankerl::unordered_dense maps, reserve(), and `-j` (parallel reads). Output is
-// identical to minshmap.py for the same hash; map_read order matches sorted(cand).
-// sketch: FracMinHash, 2-bit rolling code + SplitMix64 | index: hash->[(seg,pos,strand)] | map: rank read
-// k-mers rarest-first, scatter rarest into overlapping windows, score containment, prune
-// via sh = 1-(used-matches)/m.
-// Build: g++ -O3 -std=c++17 -march=native -pthread -I ../shmap/ext/unordered_dense/include \
-//        -o minshmap minshmap.cpp
+// minSHmap (C++) - sketch-based read mapper; same algorithm as the pedagogical minshmap.py,
+// optimized: flat CSR hit layout, ankerl::unordered_dense maps, reserve(), `-j` parallel reads.
+// Byte-identical output to minshmap.py (same hash, map order = sorted(cand)). Pipeline: FracMinHash
+// sketch (2-bit rolling code + SplitMix64) -> hash->[(seg,pos,strand)] index -> map: rank read k-mers
+// rarest-first, scatter into overlapping windows, score containment, prune sh=1-(used-matches)/m.
+// Build: g++ -O3 -std=c++17 -march=native -pthread -I ../shmap/ext/unordered_dense/include -o minshmap minshmap.cpp
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -21,12 +18,9 @@ using u64 = uint64_t;
 using std::string;
 using std::vector;
 static const u64 MASK64 = ~u64(0);
-// SplitMix64 finalizer: turns a packed k-mer code into a well-mixed 64-bit hash.
-static inline u64 mix(u64 x) {
-    x += 0x9E3779B97F4A7C15ULL;
-    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
-    return x ^ (x >> 31);
+static inline u64 mix(u64 x) {                          // SplitMix64 finalizer: packed code -> 64-bit hash
+    x += 0x9E3779B97F4A7C15ULL; x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL; return x ^ (x >> 31);
 }
 static inline int b2(unsigned char c) { return c == 'C' ? 1 : c == 'G' ? 2 : c == 'T' ? 3 : 0; }  // complement(b)=3-b
 struct SkEntry { int pos; u64 h; int strand; };  // strand: 0 forward, 1 rev-comp
@@ -36,31 +30,24 @@ static vector<SkEntry> sketch(const string &seq, int k, double hfrac) {
     vector<SkEntry> out;
     int n = (int)seq.size();
     if (n < k) return out;
-    u64 thr = hfrac >= 1.0 ? MASK64 : (u64)(hfrac * 18446744073709551616.0);  // hfrac * 2^64
-    u64 mask = k >= 32 ? MASK64 : ((u64(1) << (2 * k)) - 1);
+    u64 thr = hfrac >= 1.0 ? MASK64 : (u64)(hfrac * 18446744073709551616.0);   // hfrac * 2^64
+    u64 mask = k >= 32 ? MASK64 : ((u64(1) << (2 * k)) - 1), fw = 0, rc = 0;    // window mask + fw/rc 2-bit codes
     int sh = 2 * (k - 1);
-    u64 fw = 0, rc = 0;                                 // forward + reverse-complement 2-bit codes
-    for (int t = 0; t < k; ++t) {                       // pack the first window
-        int b = b2(seq[t]);
-        fw = ((fw << 2) | b) & mask;
-        rc = (rc >> 2) | ((u64)(3 - b) << sh);
-    }
+    auto roll = [&](int b) { fw = ((fw << 2) | b) & mask; rc = (rc >> 2) | ((u64)(3 - b) << sh); };
+    for (int t = 0; t < k; ++t) roll(b2(seq[t]));       // pack the first window
     for (int i = 0;; ++i) {
         u64 c = fw <= rc ? fw : rc;                     // canonical k-mer (min over both strands)
         if (u64 h = mix(c); h <= thr) out.push_back({i, h, fw <= rc ? 0 : 1});
         if (i + k >= n) break;
-        int b = b2(seq[i + k]);                          // roll the window one base
-        fw = ((fw << 2) | b) & mask;
-        rc = (rc >> 2) | ((u64)(3 - b) << sh);
+        roll(b2(seq[i + k]));                            // roll the window one base
     }
     return out;
 }
 struct Hit { int sid; int pos; int strand; };
 struct Segment { string name; int length; };
-// CSR layout: all hits for a hash are contiguous in `hits`; `id` maps hash -> dense
-// slot, and slot s spans hits[off[s] .. off[s+1]). One allocation instead of a vector
-// per hash -> far fewer cache misses while scanning a seed's hits. Hits in a slot are
-// kept sorted by (sid, pos) (built in reference order) so map_read can binary-search them.
+// CSR layout: hits for a hash are contiguous in `hits`; `id` maps hash -> dense slot s,
+// spanning hits[off[s]..off[s+1]). One allocation (not a vector per hash) -> fewer cache
+// misses; hits in a slot stay sorted by (sid, pos) so map_read can binary-search them.
 struct Index {
     ankerl::unordered_dense::map<u64, uint32_t> id;
     vector<uint32_t> off;
@@ -84,20 +71,17 @@ static Index build_index(const vector<std::pair<string, string>> &refs, int k, d
             raw.push_back({e.h, {(int)sid, e.pos, e.strand}});
     }
     idx.id.reserve(raw.size());
-    vector<uint32_t> slot(raw.size());                 // dense slot id per raw entry (captured once)
-    vector<uint32_t> cnt;                              // hits per slot, slots in first-seen order
-    for (size_t i = 0; i < raw.size(); ++i) {
-        auto it = idx.id.try_emplace(raw[i].first, (uint32_t)cnt.size()).first;
-        uint32_t s = it->second;
+    vector<uint32_t> slot(raw.size()), cnt;            // dense slot per entry; hits per slot (first-seen order)
+    for (size_t i = 0; i < raw.size(); ++i) {          // single hashmap lookup/entry, remember the slot
+        uint32_t s = idx.id.try_emplace(raw[i].first, (uint32_t)cnt.size()).first->second;
         if (s == (uint32_t)cnt.size()) cnt.push_back(0);
-        ++cnt[s];
-        slot[i] = s;                                   // remember slot -> no 2nd hashmap lookup below
+        ++cnt[s]; slot[i] = s;
     }
     idx.off.assign(cnt.size() + 1, 0);
     for (size_t s = 0; s < cnt.size(); ++s) idx.off[s + 1] = idx.off[s] + cnt[s];
     idx.hits.resize(raw.size());
     vector<uint32_t> cur(idx.off.begin(), idx.off.end() - 1);  // running write head per slot
-    for (size_t i = 0; i < raw.size(); ++i) idx.hits[cur[slot[i]]++] = raw[i].second;  // stable in-slot order
+    for (size_t i = 0; i < raw.size(); ++i) idx.hits[cur[slot[i]]++] = raw[i].second;  // stable placement
     return idx;
 }
 struct Mapping { int sid; int t_start; int t_end; double score; int codir; bool ok = false; };
@@ -112,12 +96,10 @@ static Mapping map_read(const string &seq, const Index &idx, int k, double hfrac
     struct Seed { const Hit *hits; int n_hits; int rstrand; };
     ankerl::unordered_dense::set<u64> seen;
     vector<Seed> seeds;
-    seen.reserve(sk.size());
-    seeds.reserve(sk.size());
+    seen.reserve(sk.size()); seeds.reserve(sk.size());
     for (const auto &e : sk) {                         // one seed per distinct read k-mer
         if (!seen.insert(e.h).second) continue;
-        int nh;
-        const Hit *hp = idx.range(e.h, nh);
+        int nh; const Hit *hp = idx.range(e.h, nh);
         seeds.push_back({hp, nh, e.strand});
     }
     std::stable_sort(seeds.begin(), seeds.end(),       // rarest first (stable: ties keep order)
@@ -146,10 +128,7 @@ static Mapping map_read(const string &seq, const Index &idx, int k, double hfrac
         bool pruned = false;                                            // best is useless -> prune it
         for (const Seed &s : seeds) {                  // add seeds rarest-first, prune early
             ++used;
-            // s.hits are sorted by (sid, pos) within the CSR slot, so binary-search the
-            // first hit >= (sid, lo); if it lands in [lo, hi) it's the smallest-pos match
-            // (exactly what the old linear scan + break returned). O(log n) not O(n).
-            int a = 0, z = s.n_hits;
+            int a = 0, z = s.n_hits;                    // lower_bound (sid,lo): smallest-pos match, O(log n)
             while (a < z) {
                 int mid = (a + z) >> 1;
                 const Hit &h = s.hits[mid];
@@ -157,8 +136,7 @@ static Mapping map_read(const string &seq, const Index &idx, int k, double hfrac
                 else z = mid;
             }
             if (a < s.n_hits && s.hits[a].sid == sid && s.hits[a].pos < hi) {
-                const Hit &hit = s.hits[a];            // count once per k-mer
-                ++matches;
+                const Hit &hit = s.hits[a]; ++matches;
                 codir += (hit.strand == s.rstrand) ? 1 : -1;
                 r_min = r_min < 0 ? hit.pos : std::min(r_min, hit.pos);
                 r_max = std::max(r_max, hit.pos);
@@ -182,8 +160,7 @@ static vector<std::pair<string, string>> read_fasta(const string &path) {
     std::ifstream f(path);
     if (!f) { std::cerr << "Cannot open " << path << "\n"; std::exit(1); }
     string line, name, seq;
-    bool have = false;
-    while (std::getline(f, line)) {
+    bool have = false;    while (std::getline(f, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         if (line[0] == '>') {
