@@ -1,27 +1,19 @@
-"""minSHmap - the whole sketch-based read mapper in ~150 lines, nothing else.
+"""minSHmap - the whole sketch-based read mapper, nothing else.
 
-The single, pedagogical version: one sketcher, no max_matches, no second-best/mapq
-- we just keep the single best hit. `minshmap.cpp` is a port of this file (same
-algorithm, same output) that additionally offers `-j` for output-identical
-parallelism and a few cache/layout optimizations; keep the two in lockstep.
+Pedagogical version: one sketcher, a single best hit (no max_matches / second-best /
+mapq). `minshmap.cpp` is a byte-identical port that adds `-j` parallelism and a few
+cache/layout tweaks; keep the two in lockstep. Three stages:
 
-  1. SKETCH  - (w, k)-minimizers: slide a window of `w` consecutive k-mers and keep
-               the one with the smallest hash (a sparse, well-spread sample of the
-               sequence). Each base is 2 bits; forward and reverse-complement codes
-               roll in O(1); the canonical (smaller) code is hashed, so either
-               strand is found with one index.
-  2. INDEX   - reference: hash -> [(segment, position, strand), ...].
-  3. MAP     - sketch the read; rank its minimizers rarest-first; scatter the rarest
-               ones into overlapping reference windows ("buckets"); for each
-               window compute containment while pruning with the SEED HEURISTIC
-
-                   sh = 1 - (seeds_used - matches) / m   (upper bound it can reach)
-
-               the moment sh < theta the window is provably hopeless -> skip it.
+  1. SKETCH - (w, k)-minimizers: over each window of w consecutive k-mers keep the
+              smallest-hash one. Each base is 2 bits; fw/rc codes roll in O(1) and the
+              canonical (smaller) code is hashed, so either strand hits one index.
+  2. INDEX  - reference minimizers inverted: hash -> [(segment, position, strand), ...].
+  3. MAP    - sketch the read, rank minimizers rarest-first, scatter them into
+              overlapping windows, score containment, prune with the SEED HEURISTIC
+              sh = 1 - (seeds_used - matches) / m (best it can reach): sh < theta -> skip.
 
 Usage:  python minshmap.py reference.fa reads.fa -k 15 -w 10 -t 0.9
 """
-from __future__ import annotations
 import argparse
 
 from Bio import SeqIO
@@ -39,29 +31,18 @@ def _mix(x):
 
 
 def minimizers(seq, k, w):
-    """(w, k)-minimizers via a rolling 2-bit canonical code. Yields (pos, hash, strand):
-    for each window of w consecutive k-mers keep the smallest-hash one (leftmost on
-    ties); each position is emitted once, in increasing order. k<=32. O(n*w)."""
-    n = len(seq)
-    if n < k:
+    """(w, k)-minimizers via a rolling 2-bit canonical code; yields (pos, hash, strand)
+    once per window of w consecutive k-mers (smallest hash, leftmost on ties). k<=32."""
+    if len(seq) < k:
         return
-    mask = (1 << (2 * k)) - 1
-    sh = 2 * (k - 1)
-    fw = rc = 0
-    for t in range(k):                       # pack the first window
-        b = _CODE.get(seq[t], 0)
+    mask, sh, fw, rc, kmers = (1 << (2 * k)) - 1, 2 * (k - 1), 0, 0, []
+    for i, ch in enumerate(seq):             # roll one base in; (hash, pos, strand) per k-mer
+        b = _CODE.get(ch, 0)
         fw = ((fw << 2) | b) & mask
         rc = (rc >> 2) | ((3 - b) << sh)
-    kmers, i = [], 0                         # (hash, pos, strand) for every k-mer
-    while True:
-        c = fw if fw <= rc else rc           # canonical k-mer (min over both strands)
-        kmers.append((_mix(c), i, 0 if fw <= rc else 1))
-        if i + k >= n:
-            break
-        b = _CODE.get(seq[i + k], 0)         # roll the window one base
-        fw = ((fw << 2) | b) & mask
-        rc = (rc >> 2) | ((3 - b) << sh)
-        i += 1
+        if i >= k - 1:
+            c = fw if fw <= rc else rc       # canonical k-mer (min over both strands)
+            kmers.append((_mix(c), i - k + 1, 0 if fw <= rc else 1))
     ww, last = min(w, len(kmers)), -1
     for j in range(len(kmers) - ww + 1):     # slide the window, emit each new minimizer
         best = min(range(j, j + ww), key=lambda t: kmers[t][0])   # leftmost smallest hash
@@ -86,7 +67,7 @@ def _seeds_rarest_first(sk, index):
     hashes ordered rarest (fewest reference hits) first."""
     seeds = {}
     for _, h, strand in sk:
-        if h not in seeds:
+        if h not in seeds:                   # first occurrence wins; skip duplicate lookups
             seeds[h] = (index.get(h, ()), strand)
     return seeds, sorted(seeds, key=lambda h: len(seeds[h][0]))
 
@@ -106,16 +87,14 @@ def _candidate_windows(seeds, order, m, theta, W):
 
 
 def seed_heuristic(used, matches, m):
-    """Upper bound on the containment a window can still reach, in [0, 1] (compare to theta):
-    even if every remaining seed matched, the score cannot exceed this."""
+    """Upper bound on the containment a window can still reach, in [0, 1] (compare to theta)."""
     return 1 - (used - matches) / m
 
 
 def _score_window(seeds, order, sid, lo, hi, m, target):
     """Add seeds rarest-first to window [lo, hi); stop as soon as the seed heuristic proves the
     window cannot reach `target`. Returns (score, codir, r_min, r_max), or None if pruned."""
-    used = matches = codir = 0
-    r_min = r_max = -1
+    used = matches = codir = 0; r_min = r_max = -1
     for h in order:
         used += 1
         hits, rstrand = seeds[h]
@@ -156,10 +135,9 @@ def map_read(seq, index, k, w, theta):
     return best
 
 
-def read_fasta(path):
-    """Yield (name, uppercase sequence) per FASTA record, parsed by Biopython."""
-    for rec in SeqIO.parse(path, "fasta"):
-        yield rec.id, str(rec.seq).upper()
+def fasta(path):
+    """(name, uppercase sequence) per record from Biopython; upper because the encoder only knows ACGT."""
+    return ((rec.id, str(rec.seq).upper()) for rec in SeqIO.parse(path, "fasta"))
 
 
 def main():
@@ -169,8 +147,8 @@ def main():
     p.add_argument("-w", "--window", type=int, default=10)
     p.add_argument("-t", "--theta", type=float, default=0.9)
     a = p.parse_args()
-    index, names, lengths = build_index(read_fasta(a.reference), a.k, a.window)
-    for name, seq in read_fasta(a.reads):
+    index, names, lengths = build_index(fasta(a.reference), a.k, a.window)
+    for name, seq in fasta(a.reads):
         mp = map_read(seq, index, a.k, a.window, a.theta)
         if mp is None:
             continue
