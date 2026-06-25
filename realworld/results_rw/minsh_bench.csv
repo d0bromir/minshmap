@@ -1,5 +1,0 @@
-category,n,orig_verdicts,orig_timeouts,orig_total_s,patched_verdicts,patched_timeouts,patched_total_s
-hifi,18,17,1,32.09,17,1,30.28
-ont,18,12,6,60.08,13,5,58.26
-decoy,18,5,13,125.42,12,6,73.0
-ALL,54,34,20,217.6,42,12,161.55

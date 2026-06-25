@@ -37,7 +37,11 @@ DATASETS = [("hifi", "PacBio HiFi"), ("ont", "Oxford Nanopore"), ("clr", "PacBio
 MAX_READS = 2000          # same subset size as the baseline (realworld.csv)
 
 # Core mapping parameters (identical to minshmap.py / minshmap.cpp on the CLI).
-PARAMS = dict(k=15, hfrac=0.05, theta=0.3)
+# theta=0.2: (w,k)-minimizer containment runs systematically lower than the old
+# FracMinHash (one error changes a whole window's minimum, not just one k-mer), so
+# the FracMinHash-era theta=0.3 was too high and dropped every HiFi read. At 0.2 the
+# partial/junction HiFi reads (~30% on chr21) clear the bar -> 16 mapped (~ shmap 17).
+PARAMS = dict(k=15, window=10, theta=0.2)
 PREFILL_TOOLS = ("shmap", "minsh")   # rows copied from the baseline, not re-run
 
 
@@ -92,7 +96,7 @@ def main():
     os.makedirs(RESULTS, exist_ok=True)
 
     prefill_rows = load_prefill(BASELINE_CSV)
-    kc = ["-k", str(PARAMS["k"]), "-r", str(PARAMS["hfrac"]), "-t", str(PARAMS["theta"])]
+    kc = ["-k", str(PARAMS["k"]), "-w", str(PARAMS["window"]), "-t", str(PARAMS["theta"])]
 
     rows = []     # assembled output rows (measured + baseline)
     for label, platform in DATASETS:

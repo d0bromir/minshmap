@@ -1,12 +1,13 @@
 // minSHmap (C++) - sketch-based read mapper; same algorithm as the pedagogical minshmap.py,
 // optimized: flat CSR hit layout, ankerl::unordered_dense maps, reserve(), `-j` parallel reads.
-// Byte-identical output to minshmap.py (same hash, map order = sorted(cand)). Pipeline: FracMinHash
-// sketch (2-bit rolling code + SplitMix64) -> hash->[(seg,pos,strand)] index -> map: rank read k-mers
+// Byte-identical output to minshmap.py (same hash, map order = sorted(cand)). Pipeline: (w,k)-minimizers
+// (2-bit rolling code + SplitMix64) -> hash->[(seg,pos,strand)] index -> map: rank read minimizers
 // rarest-first, scatter into overlapping windows, score containment, prune sh=1-(used-matches)/m.
 // Build: g++ -O3 -std=c++17 -march=native -pthread -I ../shmap/ext/unordered_dense/include -o minshmap minshmap.cpp
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -25,21 +26,30 @@ static inline u64 mix(u64 x) {                          // SplitMix64 finalizer:
 static inline int b2(unsigned char c) { return c == 'C' ? 1 : c == 'G' ? 2 : c == 'T' ? 3 : 0; }  // complement(b)=3-b
 struct SkEntry { int pos; u64 h; int strand; };  // strand: 0 forward, 1 rev-comp
 
-// Kept (pos, hash, strand) k-mers; mirrors minshmap.py sketch(). k <= 32. O(len).
-static vector<SkEntry> sketch(const string &seq, int k, double hfrac) {
+// (w,k)-minimizers; mirrors minshmap.py minimizers(). Each window of w consecutive k-mers
+// contributes its smallest-hash k-mer (leftmost on ties), emitted once in pos order. k<=32.
+static vector<SkEntry> sketch(const string &seq, int k, int w) {
     vector<SkEntry> out;
     int n = (int)seq.size();
     if (n < k) return out;
-    u64 thr = hfrac >= 1.0 ? MASK64 : (u64)(hfrac * 18446744073709551616.0);   // hfrac * 2^64
     u64 mask = k >= 32 ? MASK64 : ((u64(1) << (2 * k)) - 1), fw = 0, rc = 0;    // window mask + fw/rc 2-bit codes
     int sh = 2 * (k - 1);
     auto roll = [&](int b) { fw = ((fw << 2) | b) & mask; rc = (rc >> 2) | ((u64)(3 - b) << sh); };
     for (int t = 0; t < k; ++t) roll(b2(seq[t]));       // pack the first window
+    vector<SkEntry> km;                                 // (pos, hash, strand) for every k-mer
     for (int i = 0;; ++i) {
         u64 c = fw <= rc ? fw : rc;                     // canonical k-mer (min over both strands)
-        if (u64 h = mix(c); h <= thr) out.push_back({i, h, fw <= rc ? 0 : 1});
+        km.push_back({i, mix(c), fw <= rc ? 0 : 1});
         if (i + k >= n) break;
         roll(b2(seq[i + k]));                            // roll the window one base
+    }
+    int K = (int)km.size(), ww = std::min(w, K), last = -1;
+    std::deque<int> dq;                                 // indices; hashes increasing, front = window min
+    for (int t = 0; t < K; ++t) {                       // sliding-window minimum, O(K)
+        while (!dq.empty() && km[dq.back()].h > km[t].h) dq.pop_back();  // strict -> leftmost on ties
+        dq.push_back(t);
+        if (dq.front() <= t - ww) dq.pop_front();        // evict indices left of the window
+        if (t >= ww - 1 && dq.front() != last) out.push_back(km[last = dq.front()]);
     }
     return out;
 }
@@ -62,12 +72,12 @@ struct Index {
     }
 };
 
-static Index build_index(const vector<std::pair<string, string>> &refs, int k, double hfrac) {
+static Index build_index(const vector<std::pair<string, string>> &refs, int k, int w) {
     Index idx;
     vector<std::pair<u64, Hit>> raw;                   // (hash, hit) in reference order
     for (size_t sid = 0; sid < refs.size(); ++sid) {
         idx.segments.push_back({refs[sid].first, (int)refs[sid].second.size()});
-        for (const auto &e : sketch(refs[sid].second, k, hfrac))
+        for (const auto &e : sketch(refs[sid].second, k, w))
             raw.push_back({e.h, {(int)sid, e.pos, e.strand}});
     }
     idx.id.reserve(raw.size());
@@ -85,68 +95,92 @@ static Index build_index(const vector<std::pair<string, string>> &refs, int k, d
     return idx;
 }
 struct Mapping { int sid; int t_start; int t_end; double score; int codir; bool ok = false; };
+struct Seed { const Hit *hits; int n_hits; int rstrand; };  // one distinct read minimizer
 
-// Best reference window for the read, or ok=false. Mirrors minshmap.py map_read().
-static Mapping map_read(const string &seq, const Index &idx, int k, double hfrac, double theta) {
-    Mapping best;
-    auto sk = sketch(seq, k, hfrac);
-    int m = (int)sk.size();                            // informative k-mers in the read
-    if (m == 0) return best;
-    int W = std::max((int)seq.size(), 1);              // candidate windows are read-length-wide
-    struct Seed { const Hit *hits; int n_hits; int rstrand; };
+// Upper bound on the containment a window can still reach, in [0,1] (compare to theta).
+static inline double seed_heuristic(int used, int matches, int m) { return 1.0 - double(used - matches) / m; }
+
+// One seed per distinct read minimizer (its ref hits + read strand), sorted rarest-first.
+static vector<Seed> gather_seeds(const vector<SkEntry> &sk, const Index &idx) {
     ankerl::unordered_dense::set<u64> seen;
     vector<Seed> seeds;
     seen.reserve(sk.size()); seeds.reserve(sk.size());
-    for (const auto &e : sk) {                         // one seed per distinct read k-mer
+    for (const auto &e : sk) {
         if (!seen.insert(e.h).second) continue;
         int nh; const Hit *hp = idx.range(e.h, nh);
         seeds.push_back({hp, nh, e.strand});
     }
     std::stable_sort(seeds.begin(), seeds.end(),       // rarest first (stable: ties keep order)
                      [](const Seed &a, const Seed &b) { return a.n_hits < b.n_hits; });
+    return seeds;
+}
+
+// Scatter the rarest seeds' hits into overlapping buckets (b and b-1); window keys by votes desc.
+static vector<long long> candidate_windows(const vector<Seed> &seeds, int m, double theta, int W) {
     int S = (int)((1.0 - theta) * m) + 1;              // this many rare seeds are enough
-    ankerl::unordered_dense::map<long long, int> cand; // window key (sid<<32)|bucket -> votes
+    ankerl::unordered_dense::map<long long, int> cand; // key (sid<<32)|bucket -> votes
     for (int i = 0; i < S && i < (int)seeds.size(); ++i)
-        for (int j = 0; j < seeds[i].n_hits; ++j) {    // overlapping buckets b and b-1
+        for (int j = 0; j < seeds[i].n_hits; ++j) {
             const Hit &hit = seeds[i].hits[j];
             int b = hit.pos / W;
             ++cand[((long long)hit.sid << 32) | (unsigned)b];
             if (b > 0) ++cand[((long long)hit.sid << 32) | (unsigned)(b - 1)];
         }
-    vector<std::pair<int, long long>> order;           // (votes, key); score promising windows first
+    vector<std::pair<int, long long>> order;
     order.reserve(cand.size());
     for (const auto &kv : cand) order.push_back({kv.second, kv.first});
     std::sort(order.begin(), order.end(), [](const auto &a, const auto &b) {
         return a.first != b.first ? a.first > b.first : a.second < b.second;  // votes desc, key asc
     });
-    long long best_key = 0;                            // tie-break on key -> result is order-independent
-    for (const auto &ok : order) {
-        long long key = ok.second;
-        int sid = (int)(key >> 32), b = (int)(unsigned)(key & 0xffffffffLL);
-        int lo = b * W, hi = (b + 2) * W, used = 0, matches = 0, codir = 0, r_min = -1, r_max = -1;
-        double target = best.ok ? std::max(theta, best.score) : theta;  // a window that can't beat
-        bool pruned = false;                                            // best is useless -> prune it
-        for (const Seed &s : seeds) {                  // add seeds rarest-first, prune early
-            ++used;
-            int a = 0, z = s.n_hits;                    // lower_bound (sid,lo): smallest-pos match, O(log n)
-            while (a < z) {
-                int mid = (a + z) >> 1;
-                const Hit &h = s.hits[mid];
-                if (h.sid < sid || (h.sid == sid && h.pos < lo)) a = mid + 1;
-                else z = mid;
-            }
-            if (a < s.n_hits && s.hits[a].sid == sid && s.hits[a].pos < hi) {
-                const Hit &hit = s.hits[a]; ++matches;
-                codir += (hit.strand == s.rstrand) ? 1 : -1;
-                r_min = r_min < 0 ? hit.pos : std::min(r_min, hit.pos);
-                r_max = std::max(r_max, hit.pos);
-            }
-            if (1.0 - double(used - matches) / m < target) { pruned = true; break; }  // SEED HEURISTIC
+    vector<long long> keys;
+    keys.reserve(order.size());
+    for (const auto &o : order) keys.push_back(o.second);
+    return keys;
+}
+struct WinScore { int matches, codir, r_min, r_max; bool pruned; };
+
+// Add seeds rarest-first to window [lo,hi); stop once seed_heuristic proves it can't reach
+// target. Each seed contributes its smallest-pos hit (binary-searched in the sorted slot).
+static WinScore score_window(const vector<Seed> &seeds, int sid, int lo, int hi, int m, double target) {
+    int used = 0, matches = 0, codir = 0, r_min = -1, r_max = -1;
+    for (const Seed &s : seeds) {
+        ++used;
+        int a = 0, z = s.n_hits;                        // lower_bound (sid,lo): smallest-pos match, O(log n)
+        while (a < z) {
+            int mid = (a + z) >> 1;
+            const Hit &h = s.hits[mid];
+            if (h.sid < sid || (h.sid == sid && h.pos < lo)) a = mid + 1;
+            else z = mid;
         }
-        double score = double(matches) / m;            // containment = fraction of read k-mers hit
-        if (!pruned && score >= theta &&
-            (!best.ok || score > best.score || (score == best.score && key < best_key))) {
-            best = {sid, r_min, r_max + k, score, codir, true};
+        if (a < s.n_hits && s.hits[a].sid == sid && s.hits[a].pos < hi) {
+            const Hit &hit = s.hits[a]; ++matches;
+            codir += (hit.strand == s.rstrand) ? 1 : -1;
+            r_min = r_min < 0 ? hit.pos : std::min(r_min, hit.pos);
+            r_max = std::max(r_max, hit.pos);
+        }
+        if (seed_heuristic(used, matches, m) < target) return {matches, codir, r_min, r_max, true};
+    }
+    return {matches, codir, r_min, r_max, false};
+}
+
+// Best reference window for the read, or ok=false. Mirrors minshmap.py map_read().
+static Mapping map_read(const string &seq, const Index &idx, int k, int w, double theta) {
+    Mapping best;
+    auto sk = sketch(seq, k, w);
+    int m = (int)sk.size();                            // informative minimizers in the read
+    if (m == 0) return best;
+    int W = std::max((int)seq.size(), 1);              // candidate windows are read-length-wide
+    vector<Seed> seeds = gather_seeds(sk, idx);
+    vector<long long> windows = candidate_windows(seeds, m, theta, W);
+    long long best_key = 0;                            // tie-break on key -> order-independent result
+    for (long long key : windows) {                    // score promising windows first
+        int sid = (int)(key >> 32), b = (int)(unsigned)(key & 0xffffffffLL);
+        double target = best.ok ? std::max(theta, best.score) : theta;  // can't beat best -> prune harder
+        WinScore ws = score_window(seeds, sid, b * W, (b + 2) * W, m, target);
+        if (ws.pruned) continue;
+        double score = double(ws.matches) / m;         // containment = fraction of read minimizers hit
+        if (score >= theta && (!best.ok || score > best.score || (score == best.score && key < best_key))) {
+            best = {sid, ws.r_min, ws.r_max + k, score, ws.codir, true};
             best_key = key;
         }
     }
@@ -174,9 +208,9 @@ static vector<std::pair<string, string>> read_fasta(const string &path) {
 
 // Map reads[lo,hi) into out[lo,hi); threads write disjoint slices, no locks -> byte-identical.
 static void map_chunk(const vector<std::pair<string, string>> &reads, size_t lo, size_t hi,
-                      const Index &idx, int k, double hfrac, double theta, vector<string> &out) {
+                      const Index &idx, int k, int w, double theta, vector<string> &out) {
     for (size_t i = lo; i < hi; ++i) {
-        Mapping best = map_read(reads[i].second, idx, k, hfrac, theta);
+        Mapping best = map_read(reads[i].second, idx, k, w, theta);
         if (!best.ok) continue;
         const Segment &seg = idx.segments[best.sid];
         int qlen = (int)reads[i].second.size();
@@ -205,24 +239,24 @@ static void parallel_for(size_t n, int threads, F work) {
 }
 
 int main(int argc, char **argv) {
-    int k = 15, threads = 1;
-    double hfrac = 0.05, theta = 0.9;
+    int k = 15, w = 10, threads = 1;
+    double theta = 0.9;
     vector<string> pos;
     for (int i = 1; i < argc; ++i) {
         string a = argv[i];
         auto next = [&]() { return string(argv[++i]); };
         if (a == "-k") k = std::stoi(next());
-        else if (a == "-r" || a == "--hfrac") hfrac = std::stod(next());
+        else if (a == "-w" || a == "--window") w = std::stoi(next());
         else if (a == "-t" || a == "--theta") theta = std::stod(next());
         else if (a == "-j" || a == "--threads") threads = std::stoi(next());
         else if (!a.empty() && a[0] != '-') pos.push_back(a);
         else { std::cerr << "Unknown option: " << a << "\n"; return 1; }
     }
-    if (pos.size() < 2) { std::cerr << "Usage: minshmap ref.fa reads.fa [-k][-r][-t][-j]\n"; return 1; }
-    Index idx = build_index(read_fasta(pos[0]), k, hfrac);
+    if (pos.size() < 2) { std::cerr << "Usage: minshmap ref.fa reads.fa [-k][-w][-t][-j]\n"; return 1; }
+    Index idx = build_index(read_fasta(pos[0]), k, w);
     auto reads = read_fasta(pos[1]);
     vector<string> out(reads.size());
-    parallel_for(reads.size(), threads, [&](size_t lo, size_t hi) { map_chunk(reads, lo, hi, idx, k, hfrac, theta, out); });
+    parallel_for(reads.size(), threads, [&](size_t lo, size_t hi) { map_chunk(reads, lo, hi, idx, k, w, theta, out); });
     for (const string &line : out) std::cout << line;   // original read order preserved
     return 0;
 }
