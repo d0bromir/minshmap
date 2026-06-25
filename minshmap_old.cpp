@@ -84,20 +84,17 @@ static Index build_index(const vector<std::pair<string, string>> &refs, int k, d
             raw.push_back({e.h, {(int)sid, e.pos, e.strand}});
     }
     idx.id.reserve(raw.size());
-    vector<uint32_t> slot(raw.size());                 // dense slot id per raw entry (captured once)
     vector<uint32_t> cnt;                              // hits per slot, slots in first-seen order
-    for (size_t i = 0; i < raw.size(); ++i) {
-        auto it = idx.id.try_emplace(raw[i].first, (uint32_t)cnt.size()).first;
-        uint32_t s = it->second;
-        if (s == (uint32_t)cnt.size()) cnt.push_back(0);
-        ++cnt[s];
-        slot[i] = s;                                   // remember slot -> no 2nd hashmap lookup below
+    for (auto &pr : raw) {                             // OLD: count pass (1st hashmap lookup)
+        auto it = idx.id.try_emplace(pr.first, (uint32_t)cnt.size()).first;
+        if (it->second == (uint32_t)cnt.size()) cnt.push_back(0);
+        ++cnt[it->second];
     }
     idx.off.assign(cnt.size() + 1, 0);
     for (size_t s = 0; s < cnt.size(); ++s) idx.off[s + 1] = idx.off[s] + cnt[s];
     idx.hits.resize(raw.size());
     vector<uint32_t> cur(idx.off.begin(), idx.off.end() - 1);  // running write head per slot
-    for (size_t i = 0; i < raw.size(); ++i) idx.hits[cur[slot[i]]++] = raw[i].second;  // stable in-slot order
+    for (auto &pr : raw) { uint32_t s = idx.id[pr.first]; idx.hits[cur[s]++] = pr.second; }  // OLD: 2nd lookup
     return idx;
 }
 struct Mapping { int sid; int t_start; int t_end; double score; int codir; bool ok = false; };
@@ -146,22 +143,15 @@ static Mapping map_read(const string &seq, const Index &idx, int k, double hfrac
         bool pruned = false;                                            // best is useless -> prune it
         for (const Seed &s : seeds) {                  // add seeds rarest-first, prune early
             ++used;
-            // s.hits are sorted by (sid, pos) within the CSR slot, so binary-search the
-            // first hit >= (sid, lo); if it lands in [lo, hi) it's the smallest-pos match
-            // (exactly what the old linear scan + break returned). O(log n) not O(n).
-            int a = 0, z = s.n_hits;
-            while (a < z) {
-                int mid = (a + z) >> 1;
-                const Hit &h = s.hits[mid];
-                if (h.sid < sid || (h.sid == sid && h.pos < lo)) a = mid + 1;
-                else z = mid;
-            }
-            if (a < s.n_hits && s.hits[a].sid == sid && s.hits[a].pos < hi) {
-                const Hit &hit = s.hits[a];            // count once per k-mer
-                ++matches;
-                codir += (hit.strand == s.rstrand) ? 1 : -1;
-                r_min = r_min < 0 ? hit.pos : std::min(r_min, hit.pos);
-                r_max = std::max(r_max, hit.pos);
+            for (int j = 0; j < s.n_hits; ++j) {       // OLD: linear scan, break on first match
+                const Hit &hit = s.hits[j];
+                if (hit.sid == sid && hit.pos >= lo && hit.pos < hi) {
+                    ++matches;
+                    codir += (hit.strand == s.rstrand) ? 1 : -1;
+                    r_min = r_min < 0 ? hit.pos : std::min(r_min, hit.pos);
+                    r_max = std::max(r_max, hit.pos);
+                    break;
+                }
             }
             if (1.0 - double(used - matches) / m < target) { pruned = true; break; }  // SEED HEURISTIC
         }

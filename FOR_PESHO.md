@@ -104,3 +104,36 @@ map (ankerl/unordered_dense, каквато ти ползваш) + `reserve()` �
   prune-ът се стяга до `max(theta, best.score)`, така че best се вдига по-рано и реже
   повече; изходът е запазен чрез явен tie-break (max score, min ключ).
 - **Index build** — по-бърза map + `reserve()` (CSR offsets вместо `unordered_map`).
+  Освен това вече има **само ЕДНО hashmap търсене на запис**: при броячния pass се
+  запомня dense slot-ът в `slot[]`, и placement-ът пише директно през него (преди имаше
+  втори `idx.id[...]` lookup на всеки hit). Изходът е byte-identical.
+- **Scoring loop** — вътре в `map_read` всеки seed се проверява с **binary search**
+  (`lower_bound` по (sid, pos)) вместо линейно сканиране: hit листите са сортирани, така
+  че най-малкият pos в прозореца се намира за O(log n) и съвпада точно с това, което
+  старият линеен scan + `break` връщаше → codir / r_min / r_max остават byte-identical.
+
+#### Колко по-бързо стана (контролиран A/B, същата машина, best-of-3)
+Построих „старата" версия (двойно hashmap търсене + линеен scan) и „новата" с **идентичен
+изход** (7738 PAF реда byte-identical) и ги сравних директно на chr21 (45 Mbp):
+
+| сценарий | стар | нов | ускорение |
+|---|---|---|---|
+| index build (chr21, 40 рийда) | 1.124 s | 0.781 s | **1.44×** |
+| index + scoring (chr21, 2000 рийда) | 1.475 s | 1.096 s | **1.35×** |
+
+Разбивка: основната печалба е в **index build-а ~1.44×** (едно hashmap търсене вместо две
+върху ~2.7M записа); scoring loop-ът сам по себе си е ~1.1× (binary search вместо линеен —
+скромно, защото seed-heuristic prune-ът вече реже повечето сканирания рано). Нула промяна в
+изхода — чиста скорост.
+
+### SIMD (AVX2) на sketch-а — пробвано и ВЪРНАТО назад
+Имплементирах ръчен AVX2 sketch (4 lane-а, lockstep roll, векторен хеш) с multiply-free
+finalizer (AVX2 няма 64-битово умножение, затова SplitMix64 не векторизира). Беше коректен
+и byte-identical (py == cpp scalar == cpp AVX2), но измерването показа, че **не си струва**:
+- end-to-end само ~10–20% (reads/s hifi 446→533, ont 353→373), защото sketch-ът НЕ е
+  bottleneck-ът — index build-ът е доминиран от строежа на hash map-а (~2.25M вмъквания), а
+  map loop-ът е нерегулярен (hash lookups, branchy prune) → не се векторизира.
+- multiply-free хешът мапва малко по-малко реални рийдове от SplitMix64 (hifi 14→11).
+- +80 реда AVX2 intrinsics, които чупят „минималния" дух на кода.
+Затова **върнах SplitMix64 + скаларния sketch** (round 10). Изводът остава: реалната печалба
+е във векторизиране/ускоряване на **index build-а и scoring loop-а**, не на хеша.
