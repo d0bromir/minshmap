@@ -1,9 +1,12 @@
-// minSHmap (C++) - byte-identical optimized port of minshmap.py (CSR index, binary-searched windows, deque sketch, `-j` reads).
-// Build: g++ -O3 -std=c++17 -march=native -pthread -I ../shmap/ext/unordered_dense/include -o minshmap minshmap.cpp
+// minSHmap (C++) - optimized port of minshmap.py (CSR index, binary-searched windows, `-j` reads).
+// Minimizers come from the SAME library as the Python tool: rust-seq/minimizer-iter via the
+// minimizer_ext C ABI (so py and cpp stay byte-identical, no copy-pasted sketch). w must be ODD.
+// Build: cargo build --release --no-default-features (in minimizer_ext/), then
+//   g++ -O3 -std=c++17 -march=native -pthread -I ../shmap/ext/unordered_dense/include -o minshmap minshmap.cpp \
+//       -L minimizer_ext/target/release -lminimizer_ext -lws2_32 -luserenv -lbcrypt -lntdll
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <deque>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -13,31 +16,15 @@
 #include "ankerl/unordered_dense.h"
 using u64 = uint64_t; using std::string; using std::vector;
 namespace adh = ankerl::unordered_dense;
-static const u64 MASK64 = ~u64(0);
-static inline u64 mix(u64 x) { x += 0x9E3779B97F4A7C15ULL; x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL; x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL; return x ^ (x >> 31); }  // SplitMix64
-static inline int b2(unsigned char c) { return c == 'C' ? 1 : c == 'G' ? 2 : c == 'T' ? 3 : 0; }  // A/other=0; complement=3-b
+extern "C" { struct Mz { u64 pos, val; uint8_t strand; }; Mz *mz_compute(const char *seq, size_t len, size_t k, size_t w, size_t *n); void mz_free(Mz *p, size_t n); }
 struct SkEntry { int pos; u64 h; int strand; };
 struct Hit { int sid, pos, strand; };
 struct Segment { string name; int length; };
-// (w,k)-minimizers (mirrors minshmap.py): smallest-hash k-mer per w-window, once, in pos order; deque -> O(n). k<=32.
+// (w,k)-minimizers straight from minimizer-iter (rust-seq), the exact same lib minshmap.py uses. w must be ODD.
 static vector<SkEntry> sketch(const string &seq, int k, int w) {
-    vector<SkEntry> km, out;
-    int n = (int)seq.size();
-    if (n < k) return out;
-    u64 mask = k >= 32 ? MASK64 : ((u64(1) << (2 * k)) - 1), fw = 0, rc = 0;
-    int sh = 2 * (k - 1);
-    for (int i = 0; i < n; ++i) {
-        int b = b2(seq[i]); fw = ((fw << 2) | b) & mask; rc = (rc >> 2) | ((u64)(3 - b) << sh);
-        if (i >= k - 1) km.push_back({i - k + 1, mix(fw <= rc ? fw : rc), fw <= rc ? 0 : 1});
-    }
-    int K = (int)km.size(), ww = std::min(w, K), last = -1;
-    std::deque<int> dq;                                            // indices; hashes increasing, front = window min
-    for (int t = 0; t < K; ++t) {
-        while (!dq.empty() && km[dq.back()].h > km[t].h) dq.pop_back();  // strict -> leftmost on ties
-        dq.push_back(t);
-        if (dq.front() <= t - ww) dq.pop_front();
-        if (t >= ww - 1 && dq.front() != last) out.push_back(km[last = dq.front()]);
-    }
+    vector<SkEntry> out; size_t n = 0;
+    Mz *mz = mz_compute(seq.data(), seq.size(), (size_t)k, (size_t)w, &n);
+    if (mz) { out.reserve(n); for (size_t i = 0; i < n; ++i) out.push_back({(int)mz[i].pos, mz[i].val, mz[i].strand ? 1 : 0}); mz_free(mz, n); }
     return out;
 }
 // CSR index: a hash's hits are contiguous in hits[off[s]..off[s+1]) (sorted by sid,pos for binary search).
@@ -164,7 +151,7 @@ template <class F> static void parallel_for(size_t n, int threads, F work) {  //
     for (auto &th : pool) th.join();
 }
 int main(int argc, char **argv) {
-    int k = 15, w = 10, threads = 1; double theta = 0.9; vector<string> pos;
+    int k = 15, w = 11, threads = 1; double theta = 0.9; vector<string> pos;
     for (int i = 1; i < argc; ++i) {
         string a = argv[i]; auto next = [&]() { return string(argv[++i]); };
         if (a == "-k") k = std::stoi(next());
@@ -175,6 +162,7 @@ int main(int argc, char **argv) {
         else { std::cerr << "Unknown option: " << a << "\n"; return 1; }
     }
     if (pos.size() < 2) { std::cerr << "Usage: minshmap ref.fa reads.fa [-k][-w][-t][-j]\n"; return 1; }
+    if (w % 2 == 0) { std::cerr << "window (-w) must be odd for canonical minimizers\n"; return 1; }
     Index idx = build_index(read_fasta(pos[0]), k, w);
     auto reads = read_fasta(pos[1]); vector<string> out(reads.size());
     parallel_for(reads.size(), threads, [&](size_t lo, size_t hi) { map_chunk(reads, lo, hi, idx, k, w, theta, out); });

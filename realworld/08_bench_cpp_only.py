@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Benchmark ONLY the minSHmap C++ binary, pre-filling the other tools.
 
-Per the current policy we no longer re-run shmap / minSH (they are expensive and
-their numbers are stable): this script freshly times only `minshmap_linux` on
-chr21 and copies the `shmap` and `minsh` rows verbatim from the existing baseline
-CSV (results_rw/realworld.csv). Each output row carries a `source` column:
-`measured` (this run) or `baseline` (carried over).
+Per the current policy we no longer re-run shmap (it is expensive and its numbers
+are stable): this script freshly times only `minshmap_linux` on chr21 and copies
+the `shmap` rows verbatim from the existing baseline CSV (results_rw/realworld.csv).
+minSH is excluded entirely (it solves a different task -- global alignment -- so a
+head-to-head with our semi-global mapper is not meaningful). Each output row carries
+a `source` column: `measured` (this run) or `baseline` (carried over).
 
 minSHmap now has a single sketcher (ntHash) and no max_matches, matching the
 pedagogical minshmap.py, so there is one `minshmap-cpp` row per dataset. Same
@@ -43,9 +44,9 @@ MAX_READS = 2000          # same subset size as the baseline (realworld.csv)
 # higher for low-error HiFi, lower for noisy ONT/CLR where few k-mers survive intact
 # ((1-e)^k ~ 0.15 ONT, ~0.09 CLR at k=15). Values picked to stay AT/UNDER shmap's truth
 # (hifi 17 / ont 32 / clr 2) -> no false-positive explosion (theta<=0.05 blows CLR to 48+).
-PARAMS = dict(k=15, window=10)
+PARAMS = dict(k=15, window=11)
 THETA = {"hifi": 0.20, "ont": 0.15, "clr": 0.18}   # hifi 16, ont 28, clr 2 (<= shmap truth)
-PREFILL_TOOLS = ("shmap", "minsh")   # rows copied from the baseline, not re-run
+PREFILL_TOOLS = ("shmap",)   # shmap row copied from the baseline as a reference; minSH dropped (incomparable task)
 
 
 def read_reads(path, limit):
@@ -80,7 +81,7 @@ def parse_paf_mapped(text):
 
 
 def load_prefill(path):
-    """Read the baseline CSV -> list of shmap / minsh rows (carried over verbatim)."""
+    """Read the baseline CSV -> shmap rows (carried over verbatim as a reference)."""
     if not os.path.exists(path):
         sys.exit(f"Missing baseline CSV: {path}")
     rows = []
@@ -132,7 +133,7 @@ def main():
             "source": "measured",
         })
 
-        # Carry over the pre-filled rows for this dataset (shmap, minsh).
+        # Carry over the pre-filled shmap row for this dataset.
         for r in prefill_rows:
             if r["dataset"] == label:
                 rows.append({**r, "source": "baseline"})

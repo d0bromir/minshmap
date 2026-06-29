@@ -1,55 +1,36 @@
 """minSHmap - the whole sketch-based read mapper, nothing else.
 
 Pedagogical version: one sketcher, a single best hit (no max_matches / second-best /
-mapq). `minshmap.cpp` is a byte-identical port that adds `-j` parallelism and a few
-cache/layout tweaks; keep the two in lockstep. Three stages:
+mapq). Three stages:
 
-  1. SKETCH - (w, k)-minimizers: over each window of w consecutive k-mers keep the
-              smallest-hash one. Each base is 2 bits; fw/rc codes roll in O(1) and the
-              canonical (smaller) code is hashed, so either strand hits one index.
+  1. SKETCH - canonical (w, k)-minimizers from the `minimizer-iter` library
+              (rust-seq / Igor Martayan), exposed to Python by the tiny PyO3 wrapper
+              in `minimizer_ext/`. We do NOT hand-roll the sketch: the rolling hash,
+              sliding-window minimum and canonicalization all live in that library, so
+              a read and its reverse complement select the same minimizers (one index
+              serves both strands). `w` must be ODD (the canonical scheme uses an odd
+              window to break forward/reverse ties).
   2. INDEX  - reference minimizers inverted: hash -> [(segment, position, strand), ...].
   3. MAP    - sketch the read, rank minimizers rarest-first, scatter them into
               overlapping windows, score containment, prune with the SEED HEURISTIC
               sh = 1 - (seeds_used - matches) / m (best it can reach): sh < theta -> skip.
 
-Usage:  python minshmap.py reference.fa reads.fa -k 15 -w 10 -t 0.9
+Setup once:  cd minimizer_ext && maturin build --release -i <python> && pip install <wheel>
+Usage:       python minshmap.py reference.fa reads.fa -k 15 -w 11 -t 0.9
 """
 import argparse
 
 from Bio import SeqIO
-
-MASK64 = (1 << 64) - 1
-_CODE = {"A": 0, "C": 1, "G": 2, "T": 3}     # 2 bits per base; complement(b) = 3 - b
-
-
-def _mix(x):
-    """SplitMix64 finalizer: a packed k-mer code -> a well-mixed 64-bit hash."""
-    x = (x + 0x9E3779B97F4A7C15) & MASK64
-    x = ((x ^ (x >> 30)) * 0xBF58476D1CE4E5B9) & MASK64
-    x = ((x ^ (x >> 27)) * 0x94D049BB133111EB) & MASK64
-    return x ^ (x >> 31)
+from minimizer_ext import canonical_minimizers
 
 
 def minimizers(seq, k, w):
-    """(w, k)-minimizers via a rolling 2-bit canonical code; yields (pos, hash, strand)
-    once per window of w consecutive k-mers (smallest hash, leftmost on ties). k<=32."""
-    if len(seq) < k:
-        return
-    mask, sh, fw, rc, kmers = (1 << (2 * k)) - 1, 2 * (k - 1), 0, 0, []
-    for i, ch in enumerate(seq):             # roll one base in; (hash, pos, strand) per k-mer
-        b = _CODE.get(ch, 0)
-        fw = ((fw << 2) | b) & mask
-        rc = (rc >> 2) | ((3 - b) << sh)
-        if i >= k - 1:
-            c = fw if fw <= rc else rc       # canonical k-mer (min over both strands)
-            kmers.append((_mix(c), i - k + 1, 0 if fw <= rc else 1))
-    ww, last = min(w, len(kmers)), -1
-    for j in range(len(kmers) - ww + 1):     # slide the window, emit each new minimizer
-        best = min(range(j, j + ww), key=lambda t: kmers[t][0])   # leftmost smallest hash
-        if best != last:
-            h, pos, strand = kmers[best]
-            yield pos, h, strand
-            last = best
+    """Canonical (w, k)-minimizers straight from the minimizer-iter library: yields
+    (pos, hash, strand) per emitted minimizer (`w` must be odd). The only thing we do
+    here is reshape the library's tuple - it returns the strand as a bool, the mapper
+    wants 0/1 - so none of the sketch logic is ours."""
+    for pos, h, strand in canonical_minimizers(seq, k, w):
+        yield pos, h, 1 if strand else 0
 
 
 def build_index(refs, k, w):
@@ -144,9 +125,11 @@ def main():
     p = argparse.ArgumentParser(description="minSHmap - minimal sketch mapper")
     p.add_argument("reference"); p.add_argument("reads")
     p.add_argument("-k", type=int, default=15)
-    p.add_argument("-w", "--window", type=int, default=10)
+    p.add_argument("-w", "--window", type=int, default=11)   # must be odd (canonical minimizers)
     p.add_argument("-t", "--theta", type=float, default=0.9)
     a = p.parse_args()
+    if a.window % 2 == 0:
+        p.error("window (-w) must be odd for canonical minimizers")
     index, names, lengths = build_index(fasta(a.reference), a.k, a.window)
     for name, seq in fasta(a.reads):
         mp = map_read(seq, index, a.k, a.window, a.theta)

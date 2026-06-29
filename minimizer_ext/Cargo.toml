@@ -1,0 +1,19 @@
+[package]
+name = "minimizer_ext"
+version = "0.1.0"
+edition = "2021"
+description = "Tiny PyO3 wrapper exposing rust-seq/minimizer-iter canonical (w,k)-minimizers to Python."
+license = "MIT"
+
+[lib]
+name = "minimizer_ext"
+# cdylib -> Python wheel (maturin); staticlib -> link into minshmap.cpp; rlib -> tests.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = ["python"]
+python = ["pyo3"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
+minimizer-iter = "1.2"

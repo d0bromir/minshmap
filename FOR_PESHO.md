@@ -5,7 +5,64 @@
 
 ---
 
-## Последна итерация — твоите 6 точки за съкращаване/чистене
+## Най-нова итерация — minimizer-ите вече идват от ЧУЖДА библиотека
+
+Твоята забележка: „под използване на minimizers имах предвид да не си пишем свой
+скеч, а да ползваме чужд (от библиотека, а не copy-paste). Възможно е да има разлики
+в интерфейса, но би трябвало да са решими." — **направено.**
+
+- **Махнат собственият скеч от [minshmap.py](minshmap.py).** Изтрити са ръчният
+  `minimizers(seq,k,w)` (2-битов rolling код + sliding-window min) и `_mix` (SplitMix64).
+  Сега скечът е **canonical (w,k)-minimizer от библиотеката
+  [`minimizer-iter`](https://crates.io/crates/minimizer-iter)** (rust-seq / Igor
+  Martayan — същата екосистема като RagnarGrootKoerkamp/minimizers, която беше
+  посочил). Целият скеч (rolling hash, sliding-window минимум, канонизация) е **техен
+  код**; в `minshmap.py` остава само:
+  ```python
+  from minimizer_ext import canonical_minimizers
+  def minimizers(seq, k, w):
+      for pos, h, strand in canonical_minimizers(seq, k, w):
+          yield pos, h, 1 if strand else 0
+  ```
+
+- **Решените „разлики в интерфейса"** (точно както каза, че ще ги има):
+  1. `minimizer-iter` е Rust crate **без Python пакет** (не е на PyPI; единственият
+     Python-binding minimizer пакет — RagnarGrootKoerkamp/minimizers — дава само
+     density/stats функции, не и позиции). Затова написах ~30-реда **PyO3 обвивка**
+     [minimizer_ext/](minimizer_ext/) (maturin), която вика `MinimizerBuilder` на
+     библиотеката. Алгоритъмът е 100% техен — обвивката само превръща резултата в
+     Python tuple-и.
+  2. **Canonical режимът иска НЕЧЕТЕН `w`** (нечётният прозорец чупи равенствата
+     forward/reverse). Затова default `w` стана **11** (от 10) + проверка в CLI.
+  3. Библиотеката връща strand като `bool` → превръщаме го в 0/1 за мапъра.
+  Canonical = рийд и неговият reverse-complement избират едни и същи minimizer-и, така
+  че един индекс обслужва двете вериги (точно каквото ни трябва).
+
+- **Проверено:** `python minshmap.py data/ref.fa data/reads.fa -k 11 -w 5 -t 0.4` →
+  **7854 мапнати, precision 100%** (всичките на верния локус спрямо истината в
+  хедърите). Поведението е същото като преди смяната — само скечът вече е библиотечен.
+
+- **Билд (еднократно):** иска Rust toolchain (`rustup`, инсталиран GNU 1.96) + `maturin`:
+  ```sh
+  cd minimizer_ext && maturin build --release -i <python> && pip install target/wheels/*.whl
+  ```
+  Колелото е билднато за CPython 3.14 на Windows (GNU toolchain, без MSVC).
+
+- **C++ ([minshmap.cpp](minshmap.cpp)) ползва СЪЩАТА библиотека.** За да остане `.cpp`
+  byte-identical с `.py`, минимайзерите идват от `minimizer-iter` и в C++ — чрез C ABI
+  (`mz_compute`/`mz_free`) върху същия crate, билднат като статична библиотека:
+  ```sh
+  cd minimizer_ext && cargo build --release --no-default-features
+  g++ -O3 -std=c++17 -march=native -pthread -I ../shmap/ext/unordered_dense/include \
+      -o minshmap minshmap.cpp -L minimizer_ext/target/release \
+      -l:libminimizer_ext.a -lws2_32 -luserenv -lbcrypt -lntdll
+  ```
+  Така и двата инструмента викат **един и същ** скеч → **byte-identical** изход
+  (проверено: py == cpp(-j1) == cpp(-j4), 7854 реда), и пак „ползвай чужда библиотека".
+
+---
+
+## Предишна итерация — твоите 6 точки за съкращаване/чистене
 
 1. **Махнат FracMinHash → стандартен (w,k)-minimizer.** `sketch`/`minimizers(seq,k,w)`
    вече връща minimizer-а на всеки прозорец от `w` последователни k-мера: k-мерът с
