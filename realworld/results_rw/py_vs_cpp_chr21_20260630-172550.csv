@@ -1,0 +1,4 @@
+dataset,reads,theta,py_index_s,py_map_s,py_reads_per_s,py_mapped,py_precision,cpp_wall_s,cpp_reads_per_s,cpp_mapped,shmap_reads,shmap_wall_s,shmap_reads_per_s,shmap_mapped
+hifi,6000,0.2,51.879,683.646,8.78,30,,12.317,487.13,30,2000,7.383,271.0,17
+ont,6000,0.15,43.335,4013.461,1.49,120,,34.271,175.07,120,2000,28.932,69.0,32
+clr,6000,0.18,41.855,476.946,12.58,3,,9.473,633.36,3,2000,1.751,1142.0,2
