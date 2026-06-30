@@ -1,7 +1,7 @@
 """minSHmap - the whole sketch-based read mapper, nothing else.
 
-Pedagogical version: one sketcher, a single best hit (no max_matches / second-best /
-mapq). Three stages:
+Pedagogical version: one sketcher, a single best hit plus a phi-FREE mapping quality.
+Three stages:
 
   1. SKETCH - canonical (w, k)-minimizers from the `minimizer-iter` library
               (rust-seq / Igor Martayan), exposed to Python by the tiny PyO3 wrapper
@@ -14,11 +14,19 @@ mapq). Three stages:
   3. MAP    - sketch the read, rank minimizers rarest-first, scatter them into
               overlapping windows, score containment, prune with the SEED HEURISTIC
               sh = 1 - (seeds_used - matches) / m (best it can reach): sh < theta -> skip.
+              Then a mapping quality mapq in {0, 60}: 60 iff the best mapping is
+              confidently unique. Uniqueness uses the phi-FREE rule (Def. 5'): an
+              *alternative* is any candidate whose reference interval is DISJOINT from
+              the best one. Overlap is measured in reference coordinates, so the
+              reverse-complement image of the best coincides with it and is not a
+              spurious alternative -- no maximal-overlap parameter phi is needed.
+              mapq = 60 iff every disjoint alternative is weaker by more than delta.
 
 Setup once:  cd minimizer_ext && maturin build --release -i <python> && pip install <wheel>
-Usage:       python minshmap.py reference.fa reads.fa -k 15 -w 11 -t 0.9
+Usage:       python minshmap.py reference.fa reads.fa -k 15 -w 11 -t 0.9 -d 0.15
 """
 import argparse
+from bisect import bisect_left
 
 from Bio import SeqIO
 from minimizer_ext import canonical_minimizers
@@ -34,7 +42,9 @@ def minimizers(seq, k, w):
 
 
 def build_index(refs, k, w):
-    """Reference minimizers inverted: hash -> [(segm_id, pos, strand), ...]."""
+    """Reference minimizers inverted: hash -> [(segm_id, pos, strand), ...]. Segments are
+    indexed in order and positions ascend within each, so every hit list comes out sorted
+    by (segm_id, pos) -- which is exactly what _score_window's binary search relies on."""
     index, names, lengths = {}, [], []
     for sid, (name, seq) in enumerate(refs):
         names.append(name); lengths.append(len(seq))
@@ -74,26 +84,37 @@ def seed_heuristic(used, matches, m):
 
 def _score_window(seeds, order, sid, lo, hi, m, target):
     """Add seeds rarest-first to window [lo, hi); stop as soon as the seed heuristic proves the
-    window cannot reach `target`. Returns (score, codir, r_min, r_max), or None if pruned."""
+    window cannot reach `target`. Returns (score, codir, r_min, r_max), or None if pruned.
+    Each seed's smallest-pos hit in the window is found by BINARY SEARCH (hit lists are sorted
+    by (sid, pos)), so a frequent minimizer costs O(log hits) instead of O(hits) -- identical
+    result, same algorithm as the C++ port (minshmap.cpp::score_window)."""
     used = matches = codir = 0; r_min = r_max = -1
     for h in order:
         used += 1
         hits, rstrand = seeds[h]
-        for s2, pos, hstrand in hits:
-            if s2 == sid and lo <= pos < hi:
-                matches += 1
-                codir += 1 if hstrand == rstrand else -1
-                r_min = pos if r_min < 0 else min(r_min, pos)
-                r_max = max(r_max, pos)
-                break                        # a read minimizer counts in a window once
+        a = bisect_left(hits, (sid, lo))     # first hit with (s2, pos) >= (sid, lo)
+        if a < len(hits) and hits[a][0] == sid and hits[a][1] < hi:
+            pos, hstrand = hits[a][1], hits[a][2]
+            matches += 1
+            codir += 1 if hstrand == rstrand else -1
+            r_min = pos if r_min < 0 else min(r_min, pos)
+            r_max = max(r_max, pos)
         if seed_heuristic(used, matches, m) < target:
             return None                      # provably hopeless -> skip
     return matches / m, codir, r_min, r_max  # containment = fraction of read minimizers hit
 
 
-def map_read(seq, index, k, w, theta):
-    """Best reference window for the read: (segm, t_start, t_end, score, codir) or None.
-    Stages run in order: sketch -> rank seeds -> candidate windows -> score each window."""
+def _disjoint(a, b):
+    """True iff mappings a, b = (sid, t_start, t_end) cover disjoint reference intervals."""
+    return a[0] != b[0] or a[2] <= b[1] or b[2] <= a[1]
+
+
+def map_read(seq, index, k, w, theta, delta=0.15):
+    """Best reference window for the read plus a phi-free mapq:
+    (segm, t_start, t_end, score, codir, mapq) or None. The placement (everything but
+    mapq) is exactly the single best window; mapq is 60 iff every *alternative* mapping
+    -- any scored candidate whose reference interval is DISJOINT from the best (Def. 5')
+    -- is weaker than the best by more than delta (Def. 6'). No max-overlap phi."""
     sk = list(minimizers(seq, k, w))
     m = len(sk)                              # informative minimizers in the read
     if m == 0:
@@ -102,18 +123,29 @@ def map_read(seq, index, k, w, theta):
     seeds, order = _seeds_rarest_first(sk, index)
     windows = _candidate_windows(seeds, order, m, theta, W)
     best = best_key = None
+    cands = []                               # scored windows that may be best OR a near-best alternative
     for key in windows:                      # score promising windows first
         sid, b = key
-        target = max(theta, best[3]) if best else theta   # can't beat best -> prune harder
+        # keep windows within delta of the best so a disjoint second-best survives the prune
+        target = max(theta, best[3] - delta) if best else theta
         res = _score_window(seeds, order, sid, b * W, (b + 2) * W, m, target)
         if res is None:
             continue
         score, codir, r_min, r_max = res
-        if score >= theta and (best is None or score > best[3]
-                               or (score == best[3] and key < best_key)):  # tie-break on key
-            best = (sid, r_min, r_max + k, score, codir)
-            best_key = key
-    return best
+        if score < theta:
+            continue
+        mapping = (sid, r_min, r_max + k, score, codir)
+        cands.append(mapping)
+        if best is None or score > best[3] or (score == best[3] and key < best_key):  # tie-break on key
+            best, best_key = mapping, key
+    if best is None:
+        return None
+    second = 0.0                             # strongest alternative DISJOINT from the best
+    for mp in cands:
+        if mp is not best and _disjoint(mp, best):
+            second = max(second, mp[3])
+    mapq = 60 if second < best[3] - delta else 0
+    return (*best, mapq)
 
 
 def fasta(path):
@@ -127,19 +159,20 @@ def main():
     p.add_argument("-k", type=int, default=15)
     p.add_argument("-w", "--window", type=int, default=11)   # must be odd (canonical minimizers)
     p.add_argument("-t", "--theta", type=float, default=0.9)
+    p.add_argument("-d", "--delta", type=float, default=0.15)  # mapq similarity margin (Def. 6')
     a = p.parse_args()
     if a.window % 2 == 0:
         p.error("window (-w) must be odd for canonical minimizers")
     index, names, lengths = build_index(fasta(a.reference), a.k, a.window)
     for name, seq in fasta(a.reads):
-        mp = map_read(seq, index, a.k, a.window, a.theta)
+        mp = map_read(seq, index, a.k, a.window, a.theta, a.delta)
         if mp is None:
             continue
-        sid, ts, te, score, codir = mp
+        sid, ts, te, score, codir, mapq = mp
         nmatch = round(score * len(seq))
         print("\t".join(str(x) for x in (
             name, len(seq), 0, len(seq), "+" if codir >= 0 else "-",
-            names[sid], lengths[sid], ts, te, nmatch, te - ts, 60)))
+            names[sid], lengths[sid], ts, te, nmatch, te - ts, mapq)))
 
 
 if __name__ == "__main__":

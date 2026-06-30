@@ -1,5 +1,34 @@
 # minSHmap real-world long-read benchmark
 
+## Latest run — 2026-06-30 (Python vs C++ vs shmap)
+
+- reference: T2T-CHM13v2.0 chr21 (45,090,682 bp)
+- 2,000 reads per dataset, params `k=15, w=11`
+- sketch: a single canonical `(w, k)`-minimizer from the `minimizer-iter` library — the
+  Python and C++ implementations are **algorithmically equivalent** (same binary-search hit
+  lookup) and emit **byte-identical** PAF
+- mapping quality: parameter-free ("φ-free") rule (see `../../NOTE_phi_elimination.md`)
+- CSV: [py_vs_cpp_chr21_20260630-152501.csv](py_vs_cpp_chr21_20260630-152501.csv)
+
+| dataset | py reads/s | py mapped | cpp reads/s | cpp mapped | shmap reads/s | shmap mapped |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| hifi | 7.0 | 15 | 395.6 | 15 | 271.0 | 17 |
+| ont | 1.7 | 32 | 154.3 | 32 | 69.0 | 32 |
+| clr | 12.6 | 2 | 430.4 | 2 | 1142.0 | 2 |
+
+Synthetic (8,000 short reads, `k=15 w=11 t=0.5`): py 14,499 reads/s, cpp 50,084 reads/s,
+both mapped 3385, Python placement precision 100 %.
+
+**Notes.** Python and C++ map identical read counts on every dataset (15/32/2). C++ outpaces
+the `shmap` 2026-06-21 baseline on HiFi (395.6 vs 271 r/s) and ONT (154.3 vs 69 r/s); shmap
+leads on the short CLR reads (1142 vs 430 r/s). Sensitivity matches shmap on ONT (32 = 32)
+and CLR (2 = 2) and is close on HiFi (15 vs 17). The `shmap` columns are reused from the
+historical baseline below (shmap was not re-run).
+
+---
+
+## Historical baseline — 2026-06-21 (multi-sketcher run, source of the shmap reference)
+
 - generated: 2026-06-21T18:20:15+00:00
 - reference: T2T-CHM13v2.0 chr21 (45,090,682 bp)
 - params: {'k': 15, 'hfrac': 0.05, 'theta': 0.3, 'min_diff': 0.02, 'max_matches': 1000, 'max_seeds': 500}

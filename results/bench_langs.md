@@ -1,5 +1,13 @@
 # minSHmap cross-language benchmark (Python vs. C++)
 
+> **Historical (obsolete).** This report predates the switch to the `minimizer-iter`
+> library and still lists the old `naive`/`poly`/`nthash` sketchers. The current
+> single-implementation synthetic benchmark (8,000 reads, `k=15 w=11 t=0.5`) gives
+> **Python 14,499 reads/s** and **C++ 50,084 reads/s** (~3.5×), both mapping 3385
+> reads at 100 % placement precision; on real chr21 long reads the two are
+> algorithmically identical and emit byte-identical PAF. See
+> [../realworld/results_rw/realworld.md](../realworld/results_rw/realworld.md).
+
 - generated: 2026-06-21T19:19:58+00:00
 - reference: 2 segment(s), 100,000 bp
 - reads: 500 x ~305 bp

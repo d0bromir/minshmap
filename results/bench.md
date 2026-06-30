@@ -1,5 +1,12 @@
 # minSHmap sketcher benchmark
 
+> **Historical (obsolete).** This report compares the old `naive`/`poly`/`nthash`
+> FracMinHash sketchers. minSHmap has since been unified on a single canonical
+> `(w, k)`-minimizer from the `minimizer-iter` library, so there is no longer a
+> sketcher choice. For the current Python-vs-C++ numbers see
+> [../realworld/results_rw/realworld.md](../realworld/results_rw/realworld.md)
+> (latest synthetic run: py 14,499 reads/s, cpp 50,084 reads/s, both mapped 3385).
+
 - generated: 2026-06-21T19:19:33+00:00
 - reference: 2 segment(s), 100,000 bp
 - reads: 500 x ~305 bp

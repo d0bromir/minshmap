@@ -135,116 +135,89 @@ budget that is the whole point of the project (see the honest note below).
 
 ---
 
-## 4. Benchmark — final results and analysis
+## 4. Benchmark — latest results and analysis
 
-Real-world long-read benchmark against **T2T-CHM13v2.0 chr21** (45,090,682 bp),
-2,000 reads per dataset, unified parameters
-`k=15, hfrac=0.05, theta=0.3, min_diff=0.02, max_matches=1000`. Reads are
-whole-genome WGS, so a **low mapped fraction is expected** — only the ~1–2% of
-reads originating from chr21 should map at all. Full data:
-[realworld.md](realworld/results_rw/realworld.md) and
-[realworld.csv](realworld/results_rw/realworld.csv).
+> **Implementation note.** minSHmap has since been unified on a *single*
+> strand-canonical `(w, k)`-minimizer sketcher from the
+> [`minimizer-iter`](minimizer_ext/) library — it replaces the earlier
+> `naive`/`poly`/`nthash` FracMinHash sketchers described in §1. Both the
+> [Python](minshmap.py) and the [C++](minshmap.cpp) port call that same library and
+> share the same `bisect`/binary-search hit lookup, so they are **algorithmically
+> equivalent** and emit **byte-identical** PAF. Mapping quality now uses the
+> parameter-free ("φ-free") rule — see
+> [NOTE_phi_elimination.md](NOTE_phi_elimination.md). The benchmark therefore has one
+> minSHmap participant, run as both Python and C++, with `shmap` as the production
+> reference.
 
-### Speed ranking (overall reads/s across all datasets)
+### Real-world long-read benchmark — T2T-CHM13v2.0 chr21 (45,090,682 bp)
 
-| rank | tool | reads/s |
-| --- | --- | --- |
-| 1 | `minshmap-cpp-nthash` | 196.8 |
-| 2 | `minshmap-cpp-poly` | 171.7 |
-| 3 | `shmap` | 157.6 |
-| 4 | `minshmap-cpp-naive` | 146.1 |
-| 5 | `minshmap-py-nthash` | 2.5 |
-| 6 | `minsh` | 0.09 |
+2,000 reads per dataset, `k=15, w=11`. Reads are whole-genome WGS, so a **low mapped
+fraction is expected** — only the ~1–2% originating from chr21 should map. `shmap`
+figures are its published 2026-06-21 baseline (its own settings), shown for reference.
+Full data: [realworld.md](realworld/results_rw/realworld.md) and the latest CSV in
+[results_rw/](realworld/results_rw/).
 
-### Accuracy ranking (chr21 reads recovered)
+| dataset | py reads/s | cpp reads/s | shmap reads/s | py mapped | cpp mapped | shmap mapped |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| hifi | 7.0 | 395.6 | 271.0 | 15 | 15 | 17 |
+| ont | 1.7 | 154.3 | 69.0 | 32 | 32 | 32 |
+| clr | 12.6 | 430.4 | 1142.0 | 2 | 2 | 2 |
 
-| rank | tool | total mapped | mean agree w/ shmap | identity |
-| --- | --- | --- | --- | --- |
-| 1 | `shmap` | 51 | — (reference) | — |
-| 2 | `minshmap-cpp-naive` | 22 | 0.197 | — |
-| 3 | `minshmap-cpp-poly` | 20 | 0.187 | — |
-| 4 | `minshmap-py-nthash` | 17 | 0.157 | — |
-| 4 | `minshmap-cpp-nthash` | 17 | 0.157 | — |
-| 6 | `minsh` | 1 | — | 0.869 |
+### Synthetic short-read benchmark
 
-Per-dataset mapped counts: **hifi** shmap 17 / cpp-naive 11 / py-nthash 9;
-**ont** shmap 32 / cpp-naive 11 / py-nthash 8; **clr** shmap 2 / all minshmap 0.
+8,000 reads (~300 bp, 5 % error), `k=15, w=11, theta=0.5`:
 
-### Brief analysis
+| implementation | reads/s | mapped | placement precision |
+| --- | ---: | ---: | ---: |
+| minSHmap-py | 14,499 | 3385 | 100 % |
+| minSHmap-cpp | 50,084 | 3385 | — |
 
-- **C++ is ~70–190× faster than pure Python**, as expected for an educational
-  implementation (~2 reads/s vs ~150–390 reads/s). The Python mapper is for
-  reading, not for production.
-- **ntHash is the fastest C++ sketcher on every dataset** — its rotation-based
-  rolling hash maps directly onto native 64-bit rotate instructions. This is
-  precisely shmap's design rationale, now confirmed on real data, which is why
-  the Python participant is run with ntHash.
-- **Speed-optimal ≠ sensitivity-optimal.** `naive` and `poly` map *marginally
-  more* reads than `nthash` (22/20 vs 17 total) because each hash function
-  samples a slightly different subset of k-mers. The differences are small and
-  within sketching noise.
-- **shmap is the sensitivity leader** (51 reads vs minSHmap's 17–22) — see the
-  note below for why.
+### Analysis
 
-### Detailed analysis
+- **Python and C++ are algorithmically identical.** They map the *same* read count on
+  every dataset (synthetic 3385 / 3385; chr21 15/15, 32/32, 2/2) and emit byte-identical
+  PAF. The pure-Python mapper is for reading, not for production speed.
+- **C++ now beats shmap on throughput** for the long-read sets — HiFi 395.6 vs 271 r/s
+  and ONT 154.3 vs 69 r/s — trailing only on the short CLR reads (430 vs 1142 r/s), where
+  shmap's lower per-read constant wins.
+- **Sensitivity matches shmap** on ONT (32 = 32) and CLR (2 = 2), and is close on HiFi
+  (15 vs 17). On the repetitive acrocentric chr21 the educational mapper is competitive
+  with the production tool.
+- **Why pure Python is slow on ONT (1.7 r/s).** Not an algorithm bug — the placements
+  equal C++. ONT reads are ~35 kb, so each carries thousands of minimizers; the cost is the
+  per-read minimizer work plus the 43 MB chr21 index build, times the ~100× CPython
+  interpreter constant. The hit-list lookup itself is now `O(log n)` binary search in *both*
+  implementations (see [NOTE_phi_elimination.md](NOTE_phi_elimination.md) §6, which also
+  documents how this removed an earlier `O(hits²)` blow-up on repetitive references).
 
-- **Why minSHmap maps fewer reads than shmap.** The gap is an *acceptance-rule*
-  problem, not a candidate-generation one. On **HiFi**, the missed reads sit at
-  containment ≈ 0.289–0.304, right at the `theta=0.3` cliff: these 16 kb reads
-  are only ~30% chr21 (partial/junction reads), so whole-read containment is
-  inherently diluted. On **ONT**, true-locus containment is only ≈ 0.06 because
-  k-mer survival under ~13% error is `(1-e)^k`, so *no* `theta=0.3` containment
-  rule could ever map them. shmap clears both because its mapq + chaining accept
-  on locally-supported, chained evidence rather than a single global threshold.
-- **Concordance is low and that is partly expected.** On the repetitive
-  acrocentric chr21, `agree_with_shmap` (interval overlap + strand) understates
-  agreement: minSHmap and shmap often place the same read at *different copies*
-  of the same repeat. On ONT, manual k-mer-containment adjudication of the
-  shared reads gave minSHmap 5 wins vs shmap 3 — neither is "wrong", they pick
-  different repeat instances.
-- **CLR is too short/noisy for these parameters.** At avg 1.8 kb with ~10–15%
-  error, k-mer survival at `k=15` is near zero; minSHmap maps 0 and even shmap
-  only 2. This is a parameter regime, not a bug.
-- **minSH as an independent ground-truth check.** minSH is an A\* *aligner*, not
-  a mapper. It aligned one HiFi placement to its chr21 window at **identity
-  0.869** (≫ 0.25 random), confirming minSHmap's placements are real. It can
-  only validate a single read here because A\* on 16 kb reads at ~13% divergence
-  degenerates toward Dijkstra (~3 M cells/read) — it is a spot-check, not a
-  throughput metric, and is listed last in the speed ranking for exactly that
-  reason.
+### Honest note on the remaining sensitivity gap
 
-### Honest note on closing the sensitivity gap
-
-Matching shmap's mapped count (51 vs minSHmap's ~17–22) was **investigated and
-deliberately reverted**. A simple relaxation — gating/scoring on shmap's
-seed-heuristic lower bound instead of exact containment — lifted HiFi from 9 to
-15 of shmap's 17, but introduced **~2% false positives** (13 spurious placements
-on 600 reads). Closing the gap *properly* requires shmap's mapq filtering and
-co-linear chaining safeguards, which exceed the "keep it simple, keep it
-readable" constraint that is the entire purpose of this project. So the gap is
-left **visible** in the accuracy ranking rather than papered over with a
-precision-losing hack. minSHmap stays simple and honest; shmap stays the
-sensitive production tool.
+minSHmap still maps slightly fewer HiFi reads than shmap (15 vs 17). The missed reads sit
+right at the containment threshold — 16 kb partial/junction reads only ~30 % chr21, so
+whole-read containment is inherently diluted. Closing the gap *properly* needs shmap's
+mapq filtering and co-linear chaining, which exceed the "keep it simple, keep it readable"
+budget that is the entire point of this project. So the gap is left **visible** rather than
+papered over with a precision-losing hack. minSHmap stays simple and honest; shmap stays
+the sensitive production tool.
 
 ---
 
 ## Running it
 
 ```bash
-# map reads, print PAF
-python minshmap.py reference.fa reads.fa
+# Python — map reads, print PAF
+python minshmap.py reference.fa reads.fa -k 15 -w 11 -t 0.9
 
-# generate data and self-test
-python minshmap.py --demo
-
-# choose a sketcher
-python minshmap.py reference.fa reads.fa --hash nthash
-
-# C++ port (faster)
-g++ -O3 -std=c++17 -march=native -o minshmap_linux minshmap.cpp
-./minshmap_linux reference.fa reads.fa --hash nthash
+# C++ port (faster) — byte-identical output
+g++ -O3 -std=c++17 -march=native -pthread \
+    -I ../shmap/ext/unordered_dense/include \
+    -o minshmap minshmap.cpp -L minimizer_ext/target/release \
+    -l:libminimizer_ext.a -lws2_32 -luserenv -lbcrypt -lntdll
+./minshmap reference.fa reads.fa -k 15 -w 11 -t 0.9
 ```
 
-The real-world benchmark harness lives in [realworld/](realworld); run
-`realworld/05_run_benchmark.py` (it builds the C++ binary, downloads chr21 and
-read sets, and writes `realworld.csv` / `realworld.md`).
+`-w` must be odd (canonical minimizers); the Windows link libraries
+(`-lws2_32 -luserenv -lbcrypt -lntdll`) are not needed on Linux. The real-world benchmark
+harness lives in [realworld/](realworld); `python realworld/09_bench_py_vs_cpp.py chr21`
+races the Python and C++ implementations and writes a timestamped CSV (with `shmap`
+reference columns) into [results_rw/](realworld/results_rw/).

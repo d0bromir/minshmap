@@ -12,7 +12,8 @@ For each dataset we report, per implementation: index build time, map throughput
 Modes:
   synthetic : data/ref.fa + data/reads.fa (short ~300 bp reads, 5% error). Fast.
   chr21     : data_rw/chr21.fa + data_rw/{hifi,ont,clr}.fa (real long reads).
-              Pure-Python mapping is ~2 reads/s; use --max-reads for a subset.
+              Pure-Python mapping is ~8 reads/s (binary-searched hit lists, like the
+              C++ port); use --max-reads for a subset.
 
 Usage:
   python 09_bench_py_vs_cpp.py synthetic
@@ -35,6 +36,17 @@ RESULTS = os.path.join(HERE, "results_rw")
 DATA_RW = os.path.join(HERE, "data_rw")
 SMALL = os.path.join(MINSHMAP_ROOT, "data")
 CPP_BIN = os.path.join(MINSHMAP_ROOT, "minshmap.exe" if os.name == "nt" else "minshmap_linux")
+
+# shmap reference baseline (the production C++ mapper), copied verbatim from the earlier
+# results_rw/realworld.md run for side-by-side context. NOT re-run here: shmap is an
+# external tool and the project benchmark policy reuses its published numbers. These are
+# 2000-read chr21 (T2T-CHM13v2.0) runs from 2026-06-21 with shmap's own settings, so treat
+# `shmap_mapped` as indicative sensitivity, not a same-N comparison; `shmap_reads_per_s` is.
+SHMAP_BASELINE = {  # dataset -> (reads, mapped, wall_s, reads_per_s)
+    "hifi": (2000, 17, 7.383, 271.0),
+    "ont":  (2000, 32, 28.932, 69.0),
+    "clr":  (2000, 2, 1.751, 1142.0),
+}
 
 
 def parse_truth(header):
@@ -84,7 +96,7 @@ def py_precision(placements, names, reads_path, max_reads):
         if not t or "pos" not in t or mp is None:
             continue
         total += 1
-        sid, ts, _te, _s, codir = mp
+        sid, ts, _te, _s, codir, _q = mp
         if names[sid] == t.get("segm") and ("+" if codir >= 0 else "-") == t.get("strand"):
             correct += 1 if abs(ts - int(t["pos"])) <= 1000 else 0
     return (correct / total) if total else None, total
@@ -143,13 +155,20 @@ def main():
               + (f"  precision {100*prec:.1f}% of {n_truth}" if prec is not None else ""))
         if cpp_wall:
             print(f"  cpp total {cpp_wall:7.2f}s ({n/cpp_wall:7.1f} r/s)  mapped {cpp_mapped}")
+        sh = SHMAP_BASELINE.get(label)
+        if sh:
+            print(f"  shmap ref {sh[2]:7.2f}s ({sh[3]:7.1f} r/s)  mapped {sh[1]} (of {sh[0]} reads, 2026-06-21 baseline)")
         rows.append({"dataset": label, "reads": n, "theta": theta,
                      "py_index_s": round(idx_s, 3), "py_map_s": round(map_s, 3),
                      "py_reads_per_s": round(n/map_s, 2), "py_mapped": py_mapped,
                      "py_precision": round(prec, 4) if prec is not None else "",
                      "cpp_wall_s": round(cpp_wall, 3) if cpp_wall else "",
                      "cpp_reads_per_s": round(n/cpp_wall, 2) if cpp_wall else "",
-                     "cpp_mapped": cpp_mapped if cpp_mapped is not None else ""})
+                     "cpp_mapped": cpp_mapped if cpp_mapped is not None else "",
+                     "shmap_reads": sh[0] if sh else "",
+                     "shmap_wall_s": sh[2] if sh else "",
+                     "shmap_reads_per_s": sh[3] if sh else "",
+                     "shmap_mapped": sh[1] if sh else ""})
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out = os.path.join(RESULTS, f"py_vs_cpp_{args.mode}_{stamp}.csv")
