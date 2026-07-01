@@ -86,15 +86,15 @@ def map_read_full(seq, index, k, w, theta, delta):
     m = len(sk)
     if m == 0:
         return None, []
-    W = max(len(seq), 1)
+    B = max(len(seq), 1)
     seeds, order = M._seeds_rarest_first(sk, index)
-    windows = M._candidate_windows(seeds, order, m, theta, W)
+    blocks = M._candidate_blocks(seeds, order, m, theta, B)
     best = best_key = None
     cands = []
-    for key in windows:
+    for key in blocks:
         sid, b = key
         target = max(theta, best[3] - delta) if best else theta
-        res = M._score_window(seeds, order, sid, b * W, (b + 2) * W, m, target)
+        res = M._score_block(seeds, order, sid, b * B, (b + 2) * B, m, target)
         if res is None:
             continue
         score, codir, r_min, r_max = res

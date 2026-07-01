@@ -1,7 +1,7 @@
-// minSHmap (C++) - optimized port of minshmap.py (CSR index, binary-searched windows, `-j` reads).
+// minSHmap (C++) - optimized port of minshmap.py (CSR index, binary-searched blocks, `-j` reads).
 // Minimizers come from the SAME library as the Python tool: rust-seq/minimizer-iter via the
 // minimizer_ext C ABI (so py and cpp stay byte-identical, no copy-pasted sketch). w must be ODD.
-// Reports a phi-FREE mapq (Def. 5'/6'): an alternative is any scored window whose reference
+// Reports a phi-FREE mapq (Def. 5'/6'): an alternative is any scored block whose reference
 // interval is DISJOINT from the best; mapq=60 iff every alternative is weaker by > delta.
 // Build: cargo build --release --no-default-features (in minimizer_ext/), then
 //   g++ -O3 -std=c++17 -march=native -pthread -I ../shmap/ext/unordered_dense/include -o minshmap minshmap.cpp \
@@ -60,7 +60,7 @@ static Index build_index(const vector<std::pair<string, string>> &refs, int k, i
 }
 struct Mapping { int sid, t_start, t_end; double score; int codir; int mapq = 0; bool ok = false; };
 struct Seed { const Hit *hits; int n_hits; int rstrand; };
-struct WinScore { int matches, codir, r_min, r_max; bool pruned; };
+struct BlockScore { int matches, codir, r_min, r_max; bool pruned; };
 static inline double seed_heuristic(int used, int matches, int m) { return 1.0 - double(used - matches) / m; }  // upper bound in [0,1] vs theta
 static inline bool disjoint(const Mapping &a, const Mapping &b) { return a.sid != b.sid || a.t_end <= b.t_start || b.t_end <= a.t_start; }  // disjoint reference intervals (Def. 5')
 static vector<Seed> gather_seeds(const vector<SkEntry> &sk, const Index &idx) {  // one seed per distinct minimizer, rarest-first (stable)
@@ -72,12 +72,12 @@ static vector<Seed> gather_seeds(const vector<SkEntry> &sk, const Index &idx) { 
     std::stable_sort(seeds.begin(), seeds.end(), [](const Seed &a, const Seed &b) { return a.n_hits < b.n_hits; });
     return seeds;
 }
-static vector<long long> candidate_windows(const vector<Seed> &seeds, int m, double theta, int W) {  // rarest hits -> buckets b,b-1; keys votes desc, key asc
+static vector<long long> candidate_blocks(const vector<Seed> &seeds, int m, double theta, int B) {  // rarest hits -> blocks b,b-1; keys votes desc, key asc
     int S = (int)((1.0 - theta) * m) + 1;
-    adh::map<long long, int> cand;                                // key (sid<<32)|bucket -> votes
+    adh::map<long long, int> cand;                                // key (sid<<32)|block -> votes
     for (int i = 0; i < S && i < (int)seeds.size(); ++i)
         for (int j = 0; j < seeds[i].n_hits; ++j) {
-            const Hit &hit = seeds[i].hits[j]; int b = hit.pos / W;
+            const Hit &hit = seeds[i].hits[j]; int b = hit.pos / B;
             ++cand[((long long)hit.sid << 32) | (unsigned)b];
             if (b > 0) ++cand[((long long)hit.sid << 32) | (unsigned)(b - 1)];
         }
@@ -88,8 +88,8 @@ static vector<long long> candidate_windows(const vector<Seed> &seeds, int m, dou
     for (const auto &o : order) keys.push_back(o.second);
     return keys;
 }
-// Score window [lo,hi): each seed's smallest-pos hit (binary search), prune once seed_heuristic < target.
-static WinScore score_window(const vector<Seed> &seeds, int sid, int lo, int hi, int m, double target) {
+// Score block [lo,hi): each seed's smallest-pos hit (binary search), prune once seed_heuristic < target.
+static BlockScore score_block(const vector<Seed> &seeds, int sid, int lo, int hi, int m, double target) {
     int used = 0, matches = 0, codir = 0, r_min = -1, r_max = -1;
     for (const Seed &s : seeds) {
         ++used; int a = 0, z = s.n_hits;
@@ -102,21 +102,21 @@ static WinScore score_window(const vector<Seed> &seeds, int sid, int lo, int hi,
     }
     return {matches, codir, r_min, r_max, false};
 }
-static Mapping map_read(const string &seq, const Index &idx, int k, int w, double theta, double delta) {  // best window + phi-free mapq, or ok=false
+static Mapping map_read(const string &seq, const Index &idx, int k, int w, double theta, double delta) {  // best block + phi-free mapq, or ok=false
     Mapping best; auto sk = sketch(seq, k, w); int m = (int)sk.size();
     if (m == 0) return best;
-    int W = std::max((int)seq.size(), 1);                         // candidate windows are read-length-wide
+    int B = std::max((int)seq.size(), 1);                         // candidate blocks are read-length-wide
     vector<Seed> seeds = gather_seeds(sk, idx);
-    vector<long long> windows = candidate_windows(seeds, m, theta, W);
-    long long best_key = 0; vector<Mapping> cands;                // windows that may be best OR a near-best alternative
-    for (long long key : windows) {
+    vector<long long> blocks = candidate_blocks(seeds, m, theta, B);
+    long long best_key = 0; vector<Mapping> cands;                // blocks that may be best OR a near-best alternative
+    for (long long key : blocks) {
         int sid = (int)(key >> 32), b = (int)(unsigned)(key & 0xffffffffLL);
         double target = best.ok ? std::max(theta, best.score - delta) : theta;   // keep within delta of best so a disjoint 2nd-best survives
-        WinScore ws = score_window(seeds, sid, b * W, (b + 2) * W, m, target);
-        if (ws.pruned) continue;
-        double score = double(ws.matches) / m;
+        BlockScore bs = score_block(seeds, sid, b * B, (b + 2) * B, m, target);
+        if (bs.pruned) continue;
+        double score = double(bs.matches) / m;
         if (score < theta) continue;
-        Mapping mp{sid, ws.r_min, ws.r_max + k, score, ws.codir, 0, true};
+        Mapping mp{sid, bs.r_min, bs.r_max + k, score, bs.codir, 0, true};
         cands.push_back(mp);
         if (!best.ok || score > best.score || (score == best.score && key < best_key)) { best = mp; best_key = key; }
     }

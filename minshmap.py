@@ -12,7 +12,7 @@ Three stages:
               window to break forward/reverse ties).
   2. INDEX  - reference minimizers inverted: hash -> [(segment, position, strand), ...].
   3. MAP    - sketch the read, rank minimizers rarest-first, scatter them into
-              overlapping windows, score containment, prune with the SEED HEURISTIC
+              overlapping blocks, score containment, prune with the SEED HEURISTIC
               sh = 1 - (seeds_used - matches) / m (best it can reach): sh < theta -> skip.
               Then a mapping quality mapq in {0, 60}: 60 iff the best mapping is
               confidently unique. Uniqueness uses the phi-FREE rule (Def. 5'): an
@@ -44,7 +44,7 @@ def minimizers(seq, k, w):
 def build_index(refs, k, w):
     """Reference minimizers inverted: hash -> [(segm_id, pos, strand), ...]. Segments are
     indexed in order and positions ascend within each, so every hit list comes out sorted
-    by (segm_id, pos) -- which is exactly what _score_window's binary search relies on."""
+    by (segm_id, pos) -- which is exactly what _score_block's binary search relies on."""
     index, names, lengths = {}, [], []
     for sid, (name, seq) in enumerate(refs):
         names.append(name); lengths.append(len(seq))
@@ -63,14 +63,14 @@ def _seeds_rarest_first(sk, index):
     return seeds, sorted(seeds, key=lambda h: len(seeds[h][0]))
 
 
-def _candidate_windows(seeds, order, m, theta, W):
-    """Drop the rarest seeds' hits into overlapping buckets (b and b-1) so any read-sized
-    region falls wholly inside one bucket; return the window keys by vote count (most first)."""
+def _candidate_blocks(seeds, order, m, theta, B):
+    """Drop the rarest seeds' hits into overlapping blocks (b and b-1) so any read-sized
+    region falls wholly inside one block; return the block keys by vote count (most first)."""
     S = int((1 - theta) * m) + 1             # this many rare seeds are enough to seed
     cand = {}
     for h in order[:S]:
         for sid, pos, _ in seeds[h][0]:
-            b = pos // W
+            b = pos // B
             cand[(sid, b)] = cand.get((sid, b), 0) + 1
             if b:
                 cand[(sid, b - 1)] = cand.get((sid, b - 1), 0) + 1
@@ -78,16 +78,16 @@ def _candidate_windows(seeds, order, m, theta, W):
 
 
 def seed_heuristic(used, matches, m):
-    """Upper bound on the containment a window can still reach, in [0, 1] (compare to theta)."""
+    """Upper bound on the containment a block can still reach, in [0, 1] (compare to theta)."""
     return 1 - (used - matches) / m
 
 
-def _score_window(seeds, order, sid, lo, hi, m, target):
-    """Add seeds rarest-first to window [lo, hi); stop as soon as the seed heuristic proves the
-    window cannot reach `target`. Returns (score, codir, r_min, r_max), or None if pruned.
-    Each seed's smallest-pos hit in the window is found by BINARY SEARCH (hit lists are sorted
+def _score_block(seeds, order, sid, lo, hi, m, target):
+    """Add seeds rarest-first to block [lo, hi); stop as soon as the seed heuristic proves the
+    block cannot reach `target`. Returns (score, codir, r_min, r_max), or None if pruned.
+    Each seed's smallest-pos hit in the block is found by BINARY SEARCH (hit lists are sorted
     by (sid, pos)), so a frequent minimizer costs O(log hits) instead of O(hits) -- identical
-    result, same algorithm as the C++ port (minshmap.cpp::score_window)."""
+    result, same algorithm as the C++ port (minshmap.cpp::score_block)."""
     used = matches = codir = 0; r_min = r_max = -1
     for h in order:
         used += 1
@@ -110,25 +110,25 @@ def _disjoint(a, b):
 
 
 def map_read(seq, index, k, w, theta, delta=0.15):
-    """Best reference window for the read plus a phi-free mapq:
+    """Best reference block for the read plus a phi-free mapq:
     (segm, t_start, t_end, score, codir, mapq) or None. The placement (everything but
-    mapq) is exactly the single best window; mapq is 60 iff every *alternative* mapping
+    mapq) is exactly the single best block; mapq is 60 iff every *alternative* mapping
     -- any scored candidate whose reference interval is DISJOINT from the best (Def. 5')
     -- is weaker than the best by more than delta (Def. 6'). No max-overlap phi."""
     sk = list(minimizers(seq, k, w))
     m = len(sk)                              # informative minimizers in the read
     if m == 0:
         return None
-    W = max(len(seq), 1)                     # each candidate window is read-length-wide
+    B = max(len(seq), 1)                     # each candidate block is read-length-wide
     seeds, order = _seeds_rarest_first(sk, index)
-    windows = _candidate_windows(seeds, order, m, theta, W)
+    blocks = _candidate_blocks(seeds, order, m, theta, B)
     best = best_key = None
-    cands = []                               # scored windows that may be best OR a near-best alternative
-    for key in windows:                      # score promising windows first
+    cands = []                               # scored blocks that may be best OR a near-best alternative
+    for key in blocks:                       # score promising blocks first
         sid, b = key
-        # keep windows within delta of the best so a disjoint second-best survives the prune
+        # keep blocks within delta of the best so a disjoint second-best survives the prune
         target = max(theta, best[3] - delta) if best else theta
-        res = _score_window(seeds, order, sid, b * W, (b + 2) * W, m, target)
+        res = _score_block(seeds, order, sid, b * B, (b + 2) * B, m, target)
         if res is None:
             continue
         score, codir, r_min, r_max = res

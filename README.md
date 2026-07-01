@@ -55,20 +55,20 @@ index:  hash -> [(segment_id, position, strand), ...]
 1. **Sketch the read** into `m` k-mers (its "seeds").
 2. **Rank seeds rarest-first** by how many times each occurs in the reference
    index. Rare k-mers are the strongest, cheapest evidence of a true location.
-3. **Seed candidate windows.** Scatter the hits of the rarest seeds into
-   read-length windows ("buckets") over the reference. Consecutive windows
-   overlap (each hit is added to bucket `b` and `b-1`) so any homologous region
-   lands fully inside at least one window.
-4. **Refine each window with the seed heuristic (the "SH" in shmap).** Add the
+3. **Seed candidate blocks.** Scatter the hits of the rarest seeds into
+   read-length blocks over the reference. Consecutive blocks
+   overlap (each hit is added to block `b` and `b-1`) so any homologous region
+   lands fully inside at least one block.
+4. **Refine each block with the seed heuristic (the "SH" in shmap).** Add the
    read's seeds one by one, rarest first, and track
 
    $$ sh = 1 - \frac{seeds\_used - matches}{m} $$
 
-   `sh` is an **upper bound** on the containment the window can still reach. The
-   moment `sh` drops below the homology threshold `theta`, the window can never
+   `sh` is an **upper bound** on the containment the block can still reach. The
+   moment `sh` drops below the homology threshold `theta`, the block can never
    be good enough, so it is **pruned immediately** without scanning the rest.
-5. **Score and report.** A surviving window's score is its containment
-   `matches / m`. Keep the best window (and a second-best from a different
+5. **Score and report.** A surviving block's score is its containment
+   `matches / m`. Keep the best block (and a second-best from a different
    region to derive a minimap2-style `mapq`), then emit a minimal **PAF** line.
 
 The key idea — and the thread linking this project to `minSH` — is the **seed

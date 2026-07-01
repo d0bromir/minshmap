@@ -10,12 +10,12 @@ offers `-j` for output-identical parallelism; keep the two in lockstep.
                the same hash, so either strand is found with one index).
   2. INDEX   - reference: hash -> [(segment, position, strand), ...].
   3. MAP     - sketch the read; rank its k-mers rarest-first; scatter the rarest
-               ones into overlapping reference windows ("buckets"); for each
-               window compute containment while pruning with the SEED HEURISTIC
+               ones into overlapping reference blocks; for each
+               block compute containment while pruning with the SEED HEURISTIC
 
                    sh = 1 - (seeds_used - matches) / m   (upper bound it can reach)
 
-               the moment sh < theta the window is provably hopeless -> skip it.
+               the moment sh < theta the block is provably hopeless -> skip it.
 
 Usage:  python minshmap.py reference.fa reads.fa -k 15 -r 0.05 -t 0.9
 """
@@ -64,12 +64,12 @@ def build_index(refs, k, hfrac):
 
 
 def map_read(seq, index, k, hfrac, theta):
-    """Best reference window for the read: (segm, t_start, t_end, score, codir) or None."""
+    """Best reference block for the read: (segm, t_start, t_end, score, codir) or None."""
     sk = list(sketch(seq, k, hfrac))
     m = len(sk)                              # informative k-mers in the read
     if m == 0:
         return None
-    W = max(len(seq), 1)                     # each candidate window is read-length-wide
+    B = max(len(seq), 1)                     # each candidate block is read-length-wide
 
     # One seed per distinct read k-mer: remember its reference hits and read strand.
     seeds = {}
@@ -78,19 +78,19 @@ def map_read(seq, index, k, hfrac, theta):
             seeds[h] = (index.get(h, ()), strand)
     order = sorted(seeds, key=lambda h: len(seeds[h][0]))   # rarest k-mers first
 
-    # Candidate windows (pre-#3 reference): sorted(cand) ascending, prune vs theta.
+    # Candidate blocks (pre-#3 reference): sorted(cand) ascending, prune vs theta.
     S = int((1 - theta) * m) + 1
     cand = set()
     for h in order[:S]:
         for sid, pos, _ in seeds[h][0]:
-            b = pos // W
+            b = pos // B
             cand.add((sid, b))
             if b:
                 cand.add((sid, b - 1))
 
     best = None
     for sid, b in sorted(cand):
-        lo, hi = b * W, (b + 2) * W
+        lo, hi = b * B, (b + 2) * B
         used = matches = codir = 0
         r_min = r_max = -1
         for h in order:

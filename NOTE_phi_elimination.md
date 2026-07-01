@@ -161,10 +161,10 @@ rejected:**
 ### Why pure-Python is slow on real (repetitive) data — and whether it is a bug
 
 It was **not an algorithm error** (results are identical to C++), but there *was* a genuine
-complexity inefficiency in the original pure Python: `_score_window` used to **linear-scan**
-each seed's hit list, and `_candidate_windows` creates one window per hit, so a *frequent*
-minimizer cost `O(hits) windows × O(hits) scan = O(hits²)` per read. This is now **fixed** —
-`_score_window` **binary-searches** the (sid,pos)-sorted hit list with `bisect_left`, exactly
+complexity inefficiency in the original pure Python: `_score_block` used to **linear-scan**
+each seed's hit list, and `_candidate_blocks` creates one block per hit, so a *frequent*
+minimizer cost `O(hits) blocks × O(hits) scan = O(hits²)` per read. This is now **fixed** —
+`_score_block` **binary-searches** the (sid,pos)-sorted hit list with `bisect_left`, exactly
 like the C++ port, giving `O(log hits)` per seed → `O(hits·log hits)` total. Measured `map_read`
 time vs. the largest hit-list length, before and after the fix:
 

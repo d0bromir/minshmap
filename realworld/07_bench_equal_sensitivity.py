@@ -9,7 +9,7 @@ different amounts of work. This harness separates the two things that number
 conflates:
 
   1. PER-READ MAPPER-LOOP SPEED (apples-to-apples). Both tools run their per-read
-     pipeline (sketch -> candidate windows -> seed-heuristic prune -> refine) on
+     pipeline (sketch -> candidate blocks -> seed-heuristic prune -> refine) on
      the *same* reads. We isolate that loop from the large, very different index-
      build cost with a differential measurement: time each tool on N reads and on
      2N reads (the first N are a prefix of the 2N), then
