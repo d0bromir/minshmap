@@ -20,7 +20,8 @@ using u64 = uint64_t; using std::string; using std::vector;
 namespace adh = ankerl::unordered_dense;
 extern "C" { struct Mz { u64 pos, val; uint8_t strand; }; Mz *mz_compute(const char *seq, size_t len, size_t k, size_t w, size_t *n); void mz_free(Mz *p, size_t n); }
 struct SkEntry { int pos; u64 h; int strand; };
-struct Hit { int sid, pos, strand; };
+struct Hit { uint32_t sid, pv; int pos() const { return (int)(pv >> 1); } int strand() const { return (int)(pv & 1u); } };  // 8B: pv=(pos<<1)|strand
+static inline Hit make_hit(int sid, int pos, int strand) { return { (uint32_t)sid, (uint32_t)(((uint32_t)pos << 1) | (uint32_t)(strand & 1)) }; }
 struct Segment { string name; int length; };
 // (w,k)-minimizers straight from minimizer-iter (rust-seq), the exact same lib minshmap.py uses. w must be ODD.
 static vector<SkEntry> sketch(const string &seq, int k, int w) {
@@ -42,7 +43,7 @@ static Index build_index(const vector<std::pair<string, string>> &refs, int k, i
     Index idx; vector<std::pair<u64, Hit>> raw;                    // (hash, hit) in reference order
     for (size_t sid = 0; sid < refs.size(); ++sid) {
         idx.segments.push_back({refs[sid].first, (int)refs[sid].second.size()});
-        for (const auto &e : sketch(refs[sid].second, k, w)) raw.push_back({e.h, {(int)sid, e.pos, e.strand}});
+        for (const auto &e : sketch(refs[sid].second, k, w)) raw.push_back({e.h, make_hit((int)sid, e.pos, e.strand)});
     }
     idx.id.reserve(raw.size());
     vector<uint32_t> slot(raw.size()), cnt;                        // dense slot per entry; hits per slot
@@ -77,7 +78,7 @@ static vector<long long> candidate_blocks(const vector<Seed> &seeds, int m, doub
     adh::map<long long, int> cand;                                // key (sid<<32)|block -> votes
     for (int i = 0; i < S && i < (int)seeds.size(); ++i)
         for (int j = 0; j < seeds[i].n_hits; ++j) {
-            const Hit &hit = seeds[i].hits[j]; int b = hit.pos / B;
+            const Hit &hit = seeds[i].hits[j]; int b = hit.pos() / B;
             ++cand[((long long)hit.sid << 32) | (unsigned)b];
             if (b > 0) ++cand[((long long)hit.sid << 32) | (unsigned)(b - 1)];
         }
@@ -93,10 +94,10 @@ static BlockScore score_block(const vector<Seed> &seeds, int sid, int lo, int hi
     int used = 0, matches = 0, codir = 0, r_min = -1, r_max = -1;
     for (const Seed &s : seeds) {
         ++used; int a = 0, z = s.n_hits;
-        while (a < z) { int mid = (a + z) >> 1; const Hit &h = s.hits[mid]; if (h.sid < sid || (h.sid == sid && h.pos < lo)) a = mid + 1; else z = mid; }
-        if (a < s.n_hits && s.hits[a].sid == sid && s.hits[a].pos < hi) {
-            const Hit &hit = s.hits[a]; ++matches; codir += (hit.strand == s.rstrand) ? 1 : -1;
-            r_min = r_min < 0 ? hit.pos : std::min(r_min, hit.pos); r_max = std::max(r_max, hit.pos);
+        while (a < z) { int mid = (a + z) >> 1; const Hit &h = s.hits[mid]; if ((int)h.sid < sid || ((int)h.sid == sid && h.pos() < lo)) a = mid + 1; else z = mid; }
+        if (a < s.n_hits && (int)s.hits[a].sid == sid && s.hits[a].pos() < hi) {
+            const Hit &hit = s.hits[a]; int hp = hit.pos(); ++matches; codir += (hit.strand() == s.rstrand) ? 1 : -1;
+            r_min = r_min < 0 ? hp : std::min(r_min, hp); r_max = std::max(r_max, hp);
         }
         if (seed_heuristic(used, matches, m) < target) return {matches, codir, r_min, r_max, true};
     }
