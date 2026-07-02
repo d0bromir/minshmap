@@ -54,12 +54,11 @@ def build_index(refs, k, w):
 
 
 def _seeds_rarest_first(sk, index):
-    """One seed per distinct read minimizer: {hash: (ref_hits, read_strand)}, and the
-    hashes ordered rarest (fewest reference hits) first."""
+    """One seed per distinct read minimizer: {hash: [ref_hits, read_strand, mult]}, mult =
+    its multiplicity in the read (for weighted containment); hashes ordered rarest-first."""
     seeds = {}
-    for _, h, strand in sk:
-        if h not in seeds:                   # first occurrence wins; skip duplicate lookups
-            seeds[h] = (index.get(h, ()), strand)
+    for _, h, strand in sk:                  # tally per-minimizer multiplicity (strand = first seen)
+        seeds.setdefault(h, [index.get(h, ()), strand, 0])[2] += 1
     return seeds, sorted(seeds, key=lambda h: len(seeds[h][0]))
 
 
@@ -90,18 +89,18 @@ def _score_block(seeds, order, sid, lo, hi, m, target):
     result, same algorithm as the C++ port (minshmap.cpp::score_block)."""
     used = matches = codir = 0; r_min = r_max = -1
     for h in order:
-        used += 1
-        hits, rstrand = seeds[h]
+        hits, rstrand, cnt = seeds[h]         # cnt = read multiplicity (weighted containment)
+        used += cnt
         a = bisect_left(hits, (sid, lo))     # first hit with (s2, pos) >= (sid, lo)
         if a < len(hits) and hits[a][0] == sid and hits[a][1] < hi:
             pos, hstrand = hits[a][1], hits[a][2]
-            matches += 1
+            matches += cnt
             codir += 1 if hstrand == rstrand else -1
             r_min = pos if r_min < 0 else min(r_min, pos)
             r_max = max(r_max, pos)
         if seed_heuristic(used, matches, m) < target:
             return None                      # provably hopeless -> skip
-    return matches / m, codir, r_min, r_max  # containment = fraction of read minimizers hit
+    return matches / m, codir, r_min, r_max  # weighted containment = matched occurrences / m
 
 
 def _disjoint(a, b):

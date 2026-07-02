@@ -60,15 +60,15 @@ static Index build_index(const vector<std::pair<string, string>> &refs, int k, i
     return idx;
 }
 struct Mapping { int sid, t_start, t_end; double score; int codir; int mapq = 0; bool ok = false; };
-struct Seed { const Hit *hits; int n_hits; int rstrand; };
+struct Seed { const Hit *hits; int n_hits; int rstrand, mult; };  // mult = read multiplicity (weighted containment)
 struct BlockScore { int matches, codir, r_min, r_max; bool pruned; };
 static inline double seed_heuristic(int used, int matches, int m) { return 1.0 - double(used - matches) / m; }  // upper bound in [0,1] vs theta
 static inline bool disjoint(const Mapping &a, const Mapping &b) { return a.sid != b.sid || a.t_end <= b.t_start || b.t_end <= a.t_start; }  // disjoint reference intervals (Def. 5')
-static vector<Seed> gather_seeds(const vector<SkEntry> &sk, const Index &idx) {  // one seed per distinct minimizer, rarest-first (stable)
-    adh::set<u64> seen; vector<Seed> seeds; seen.reserve(sk.size()); seeds.reserve(sk.size());
+static vector<Seed> gather_seeds(const vector<SkEntry> &sk, const Index &idx) {  // one seed per distinct minimizer (+read multiplicity), rarest-first (stable)
+    adh::map<u64, int> at; vector<Seed> seeds; at.reserve(sk.size()); seeds.reserve(sk.size());
     for (const auto &e : sk) {
-        if (!seen.insert(e.h).second) continue;
-        int nh; const Hit *hp = idx.range(e.h, nh); seeds.push_back({hp, nh, e.strand});
+        auto r = at.try_emplace(e.h, (int)seeds.size());
+        if (r.second) { int nh; const Hit *hp = idx.range(e.h, nh); seeds.push_back({hp, nh, e.strand, 1}); } else ++seeds[r.first->second].mult;
     }
     std::stable_sort(seeds.begin(), seeds.end(), [](const Seed &a, const Seed &b) { return a.n_hits < b.n_hits; });
     return seeds;
@@ -93,10 +93,10 @@ static vector<long long> candidate_blocks(const vector<Seed> &seeds, int m, doub
 static BlockScore score_block(const vector<Seed> &seeds, int sid, int lo, int hi, int m, double target) {
     int used = 0, matches = 0, codir = 0, r_min = -1, r_max = -1;
     for (const Seed &s : seeds) {
-        ++used; int a = 0, z = s.n_hits;
+        used += s.mult; int a = 0, z = s.n_hits;
         while (a < z) { int mid = (a + z) >> 1; const Hit &h = s.hits[mid]; if ((int)h.sid < sid || ((int)h.sid == sid && h.pos() < lo)) a = mid + 1; else z = mid; }
         if (a < s.n_hits && (int)s.hits[a].sid == sid && s.hits[a].pos() < hi) {
-            const Hit &hit = s.hits[a]; int hp = hit.pos(); ++matches; codir += (hit.strand() == s.rstrand) ? 1 : -1;
+            const Hit &hit = s.hits[a]; int hp = hit.pos(); matches += s.mult; codir += (hit.strand() == s.rstrand) ? 1 : -1;
             r_min = r_min < 0 ? hp : std::min(r_min, hp); r_max = std::max(r_max, hp);
         }
         if (seed_heuristic(used, matches, m) < target) return {matches, codir, r_min, r_max, true};
