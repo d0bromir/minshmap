@@ -7,8 +7,9 @@ Sections:
      un-pruned exhaustive search over ALL minimizers/blocks -> seed-heuristic pruning
      and the rarest-seed candidate generation never discard the true best (Lemma 1).
      This is independent of phi and proves the placement is unaffected by the change.
-  B. mapq, non-repetitive reference : every placed read is unique -> mapq 60, and the
-     precision of Q60 reads equals the overall precision.
+  B. mapq, non-repetitive reference : every placed read is unique -> mapq 60; a placement
+     is CORRECT iff it overlaps its truth interval by IoU >= o (default 0.1, length-scaled,
+     not a fixed bp tolerance), and the precision of Q60 reads equals overall precision.
   C. mapq, reference with a duplicated block : reads from the duplicate have a genuine
      DISJOINT second-best -> the phi-free rule must drop them to mapq 0, while reads
      from a unique region stay at 60. This is the core test that proves/rejects Def. 5'.
@@ -163,19 +164,21 @@ def section_A(index, reads, k, w, theta, n=400):
     return lost == 0
 
 
-def section_B(index, names, reads, truth, k, w, theta, delta):
-    print("\n=== B. mapq on the non-repetitive reference ===")
+def section_B(index, names, reads, truth, k, w, theta, delta, o=0.1):
+    print(f"\n=== B. mapq on the non-repetitive reference (correct = IoU >= {o:g} vs truth) ===")
     q60 = mapped = correct = correct_q60 = total_truth = 0
     for rid, seq in reads:
         mp = M.map_read(seq, index, k, w, theta, delta)
         if mp is None:
             continue
         mapped += 1
-        sid, ts, _te, _s, codir, mapq = mp
+        sid, ts, te, _s, codir, mapq = mp
         t = truth.get(rid, {})
         if "pos" in t:
             total_truth += 1
-            ok = names[sid] == t.get("segm") and ("+" if codir >= 0 else "-") == t.get("strand") and abs(ts - int(t["pos"])) <= 1000
+            tp = int(t["pos"])                       # true reference interval [pos, pos+len)
+            ok = (names[sid] == t.get("segm") and ("+" if codir >= 0 else "-") == t.get("strand")
+                  and _iou((0, ts, te), (0, tp, tp + int(t["len"]))) >= o)
             correct += ok
             if mapq == 60:
                 q60 += 1
@@ -263,6 +266,10 @@ def section_E(index, reads, k, w, theta, n=500):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="validate phi-free mapq; synthetic correctness = IoU overlap vs truth")
+    ap.add_argument("-o", "--overlap", type=float, default=0.1, help="min IoU(mapping, truth interval) to score a placement correct (0..1)")
+    o = ap.parse_args().overlap
     k, w, theta, delta = 15, 11, 0.5, 0.15
     refs = list(M.fasta(os.path.join(DATA, "ref.fa")))
     reads = list(M.fasta(os.path.join(DATA, "reads.fa")))
@@ -270,7 +277,7 @@ def main():
     index, names, lengths = M.build_index(refs, k, w)
 
     a_ok = section_A(index, reads, k, w, theta)
-    section_B(index, names, reads, truth, k, w, theta, delta)
+    section_B(index, names, reads, truth, k, w, theta, delta, o)
     idxC, namesC, chr1C = section_C(k, w, theta, delta)
     section_D(idxC, namesC, chr1C, k, w, theta, delta)
     section_E(index, reads, k, w, theta)
