@@ -1,2 +1,0 @@
-label,reads,minshmap_index_s,minshmap_map_s,minshmap_reads_per_s,minshmap_mapped,minshmap_mapped_frac,minshmap_precision,minsh_aligned,minsh_skipped_long,minsh_over_budget,minsh_align_s,minsh_reads_per_s,minsh_median_identity,minsh_median_edit_pct
-chr21/hifi (k=15 w=10 t=0.2),40,1479.899,62.381,0.64,0,0.0,,0,0,0,0.0,,,

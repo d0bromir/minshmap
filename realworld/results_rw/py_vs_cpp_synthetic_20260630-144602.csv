@@ -1,2 +1,0 @@
-dataset,reads,theta,py_index_s,py_map_s,py_reads_per_s,py_mapped,py_precision,cpp_wall_s,cpp_reads_per_s,cpp_mapped
-synthetic,8000,0.5,0.056,0.552,14499.02,3385,1.0,0.16,50083.73,3385

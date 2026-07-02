@@ -154,7 +154,7 @@ budget that is the whole point of the project (see the honest note below).
 2,000 reads per dataset, `k=15, w=11`. Reads are whole-genome WGS, so a **low mapped
 fraction is expected** — only the ~1–2% originating from chr21 should map. `shmap`
 figures are its published 2026-06-21 baseline (its own settings), shown for reference.
-Full data: [realworld.md](realworld/results_rw/realworld.md) and the latest CSV in
+Full whole-genome data: the latest `wgs_cpp_*.csv` in
 [results_rw/](realworld/results_rw/).
 
 | dataset | py reads/s | cpp reads/s | shmap reads/s | py mapped | cpp mapped | shmap mapped |
@@ -218,6 +218,6 @@ g++ -O3 -std=c++17 -march=native -pthread \
 
 `-w` must be odd (canonical minimizers); the Windows link libraries
 (`-lws2_32 -luserenv -lbcrypt -lntdll`) are not needed on Linux. The real-world benchmark
-harness lives in [realworld/](realworld); `python realworld/09_bench_py_vs_cpp.py chr21`
-races the Python and C++ implementations and writes a timestamped CSV (with `shmap`
-reference columns) into [results_rw/](realworld/results_rw/).
+harness lives in [realworld/](realworld); `python realworld/10_bench_wgs.py --datasets hifi ont clr`
+maps each real long-read set against the whole T2T-CHM13v2.0 genome with the C++ binary and
+writes a timestamped CSV into [results_rw/](realworld/results_rw/).

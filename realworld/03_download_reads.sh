@@ -2,13 +2,17 @@
 # Download small subsets of three real, recently-sequenced long-read datasets
 # for HG002/NA24385, one per common platform (the error-rate spectrum):
 #
-#   hifi : PacBio HiFi  (Sequel II,  ~99.9% acc)   SRR17284858
-#   ont  : Oxford Nanopore (GridION, ~95% acc)     SRR11032657
-#   clr  : PacBio CLR  (RS II subreads, ~87% acc)  SRR2036394
+#   hifi : PacBio HiFi CCS (Sequel, 15kb, ~99% acc)  GIAB PacBio_CCS_15kb
+#   ont  : Oxford Nanopore (GridION, ~95% acc)       SRR11032657
+#   clr  : PacBio CLR  (RS II subreads, ~87% acc)    SRR2036394
 #
-# We do NOT download the whole multi-GB files: we stream the gzip and stop after
-# the first N reads (head closes the pipe -> curl/zcat get SIGPIPE and stop), so
-# only a few hundred MB at most is transferred. FASTQ is converted to FASTA.
+# NOTE: the ENA fastq for the PacBio HiFi SRA runs are actually raw *_subreads*
+# (~10% error), NOT the CCS consensus. So for `hifi` we stream a genuine HG002
+# HiFi CCS movie straight from the GIAB FTP (Q20 = CCS ~99%+), which maps well.
+#
+# We do NOT download the whole multi-GB files: we stream and stop after the first
+# N reads (head closes the pipe -> curl/zcat get SIGPIPE and stop), so only a few
+# hundred MB at most is transferred. FASTQ is converted to FASTA.
 #
 # Usage: bash 03_download_reads.sh [N_READS]   (default 6000)
 set -u
@@ -18,7 +22,10 @@ DATA="$HERE/data_rw"
 mkdir -p "$DATA"
 N="${1:-6000}"
 
-# label  accession
+# Genuine HG002 HiFi CCS movie (plain fastq, ~3.3 GB; we stream only the head).
+HIFI_CCS_URL="https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/HG002_NA24385_son/PacBio_CCS_15kb/m54238_180901_011437.Q20.fastq"
+
+# label  accession   (hifi is handled specially via HIFI_CCS_URL above)
 DATASETS=(
   "hifi SRR17284858"
   "ont  SRR11032657"
@@ -37,17 +44,27 @@ for entry in "${DATASETS[@]}"; do
   if [[ -s "$out_fa" ]]; then
     echo "[$label] already present ($(grep -c '^>' "$out_fa") reads)"; continue
   fi
-  echo "[$label] resolving $acc ..."
-  url="$(resolve_url "$acc")"
-  if [[ -z "$url" ]]; then echo "[$label] could not resolve fastq url" >&2; continue; fi
-  echo "[$label] streaming first $N reads from https://$url"
-  # FASTQ -> FASTA, keeping the run accession in the read name. head stops early.
-  curl -fsSL "https://$url" 2>/dev/null \
-    | zcat 2>/dev/null \
-    | head -n $((N*4)) \
-    | awk -v acc="$acc" 'NR%4==1{printf(">%s_%d\n", acc, ++i)} NR%4==2{print}' \
-    > "$out_fa.tmp" || true
-  mv "$out_fa.tmp" "$out_fa"
+  if [[ "$label" == "hifi" ]]; then
+    # Real HiFi CCS from GIAB: plain (un-gzipped) fastq, so no zcat. head stops early.
+    echo "[$label] streaming first $N CCS reads from $HIFI_CCS_URL"
+    curl -fsSL -A 'curl/8.0' "$HIFI_CCS_URL" 2>/dev/null \
+      | head -n $((N*4)) \
+      | awk 'NR%4==1{printf(">HG002_CCS15kb_%d\n", ++i)} NR%4==2{print toupper($0)}' \
+      > "$out_fa.tmp" || true
+    mv "$out_fa.tmp" "$out_fa"
+  else
+    echo "[$label] resolving $acc ..."
+    url="$(resolve_url "$acc")"
+    if [[ -z "$url" ]]; then echo "[$label] could not resolve fastq url" >&2; continue; fi
+    echo "[$label] streaming first $N reads from https://$url"
+    # FASTQ -> FASTA, keeping the run accession in the read name. head stops early.
+    curl -fsSL "https://$url" 2>/dev/null \
+      | zcat 2>/dev/null \
+      | head -n $((N*4)) \
+      | awk -v acc="$acc" 'NR%4==1{printf(">%s_%d\n", acc, ++i)} NR%4==2{print}' \
+      > "$out_fa.tmp" || true
+    mv "$out_fa.tmp" "$out_fa"
+  fi
   reads=$(grep -c '^>' "$out_fa"); reads=${reads:-0}
   bp=$(grep -v '^>' "$out_fa" | tr -d '\n' | wc -c)
   avg=$(awk -v b="$bp" -v r="$reads" 'BEGIN{print (r>0)?int(b/r):0}')

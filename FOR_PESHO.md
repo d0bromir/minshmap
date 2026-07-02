@@ -97,8 +97,8 @@ py и cpp мапват **един и същ брой** reads на всеки д�
 еквивалентни (еднакъв binary-search lookup), byte-identical PAF. C++ изпреварва
 `shmap` на hifi (395.6 vs 271 r/s) и ont (154.3 vs 69 r/s); shmap води на късите
 clr. Чистият Python е бавен на ont (1.7 r/s) заради ~35 kb reads, но дава **същите**
-плейсменти като C++ (не е алгоритмична грешка). Пълни данни:
-[realworld/results_rw/realworld.md](realworld/results_rw/realworld.md).
+плейсменти като C++ (не е алгоритмична грешка). Пълни данни (whole-genome WGS):
+последния `wgs_cpp_*.csv` в [realworld/results_rw/](realworld/results_rw/).
 
 ---
 
