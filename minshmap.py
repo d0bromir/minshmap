@@ -26,10 +26,28 @@ Setup once:  cd minimizer_ext && maturin build --release -i <python> && pip inst
 Usage:       python minshmap.py reference.fa reads.fa -k 15 -w 11 -t 0.9 -d 0.15
 """
 import argparse
+import os
+import sys
+import time
 from bisect import bisect_left
 
 from Bio import SeqIO
 from minimizer_ext import canonical_minimizers
+
+
+def _rss_mb():
+    """(current VmRSS, peak VmHWM) in MB from /proc/self/status (Linux); (0, 0) elsewhere."""
+    cur = peak = 0.0
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    cur = int(line.split()[1]) / 1024.0
+                elif line.startswith("VmHWM:"):
+                    peak = int(line.split()[1]) / 1024.0
+    except OSError:
+        pass
+    return cur, peak
 
 
 def minimizers(seq, k, w):
@@ -162,16 +180,30 @@ def main():
     a = p.parse_args()
     if a.window % 2 == 0:
         p.error("window (-w) must be odd for canonical minimizers")
-    index, names, lengths = build_index(fasta(a.reference), a.k, a.window)
-    for name, seq in fasta(a.reads):
+    bench = os.environ.get("MINSHMAP_BENCH")
+    t0 = time.perf_counter()
+    index, names, lengths = build_index(fasta(a.reference), a.k, a.window)   # INDEX phase
+    t_index = time.perf_counter() - t0
+    idx_rss, _ = _rss_mb()                                                   # resident memory held by the index
+    n_reads = n_mapped = 0
+    t1 = time.perf_counter()
+    for name, seq in fasta(a.reads):                                         # MAP phase
+        n_reads += 1
         mp = map_read(seq, index, a.k, a.window, a.theta, a.delta)
         if mp is None:
             continue
+        n_mapped += 1
         sid, ts, te, score, codir, mapq = mp
         nmatch = round(score * len(seq))
         print("\t".join(str(x) for x in (
             name, len(seq), 0, len(seq), "+" if codir >= 0 else "-",
             names[sid], lengths[sid], ts, te, nmatch, te - ts, mapq)))
+    t_map = time.perf_counter() - t1
+    if bench:                                     # stderr-only diagnostics; stdout PAF stays byte-identical
+        _, peak = _rss_mb()
+        sys.stderr.write(
+            f"[bench] index_s={t_index:.6f} map_s={t_map:.6f} reads={n_reads} "
+            f"mapped={n_mapped} index_rss_mb={idx_rss:.6f} peak_rss_mb={peak:.6f}\n")
 
 
 if __name__ == "__main__":

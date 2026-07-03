@@ -1,0 +1,7 @@
+scope,dataset,mapper,ref,reads_in,mapped,map_pct,mean_mapq,total_s,index_s,map_s,index_rss_mb,peak_rss_mb,map_reads_per_s,k,w,density_or_r,theta,threads
+chromosome,hifi,shmap,chr21.fa,94,94,100.0,58.1,2.78,,,,389.1,33.8,15,31,0.0625,0.2,4
+chromosome,hifi,cpp,chr21.fa,94,94,100.0,56.8,3.1,3.01,0.03,119.4,207.7,3654.0,15,31,0.0625,0.2,4
+chromosome,hifi,py,chr21.fa,94,94,100.0,56.8,12.96,10.15,1.47,828.7,935.9,64.1,15,31,0.0625,0.2,4
+chromosome,clr,shmap,chr21.fa,1,0,0.0,0.0,1.99,,,,387.4,0.5,15,31,0.0625,0.18,4
+chromosome,clr,cpp,chr21.fa,1,1,100.0,0.0,2.84,2.81,0.0,119.4,207.7,211.7,15,31,0.0625,0.18,4
+chromosome,clr,py,chr21.fa,1,1,100.0,0.0,11.53,10.29,0.09,828.8,936.1,10.6,15,31,0.0625,0.18,4

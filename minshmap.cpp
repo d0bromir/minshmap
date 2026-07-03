@@ -7,8 +7,10 @@
 //   g++ -O3 -std=c++17 -march=native -pthread -I ../shmap/ext/unordered_dense/include -o minshmap minshmap.cpp \
 //       -L minimizer_ext/target/release -lminimizer_ext -lws2_32 -luserenv -lbcrypt -lntdll
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -127,6 +129,15 @@ static Mapping map_read(const string &seq, const Index &idx, int k, int w, doubl
     best.mapq = (second < best.score - delta) ? 60 : 0;
     return best;
 }
+// Current resident (VmRSS) and peak resident (VmHWM) set size in MB, from /proc/self/status
+// (Linux). Returns 0 if unavailable (e.g. non-Linux) so the bench line degrades gracefully.
+static void read_rss_mb(double &cur_mb, double &peak_mb) {
+    cur_mb = peak_mb = 0.0; std::ifstream f("/proc/self/status"); string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("VmRSS:", 0) == 0) cur_mb = std::stod(line.substr(6)) / 1024.0;
+        else if (line.rfind("VmHWM:", 0) == 0) peak_mb = std::stod(line.substr(6)) / 1024.0;
+    }
+}
 static string first_token(const string &s) { size_t p = s.find_first_of(" \t"); return p == string::npos ? s : s.substr(0, p); }
 static vector<std::pair<string, string>> read_fasta(const string &path) {   // (name, UPPER seq); name = first header token
     vector<std::pair<string, string>> recs; std::ifstream f(path);
@@ -175,9 +186,23 @@ int main(int argc, char **argv) {
     }
     if (pos.size() < 2) { std::cerr << "Usage: minshmap ref.fa reads.fa [-k][-w][-t][-d][-j]\n"; return 1; }
     if (w % 2 == 0) { std::cerr << "window (-w) must be odd for canonical minimizers\n"; return 1; }
-    Index idx = build_index(read_fasta(pos[0]), k, w);
+    using clk = std::chrono::steady_clock;
+    auto ti0 = clk::now();
+    Index idx = build_index(read_fasta(pos[0]), k, w);           // INDEX phase: read reference + build CSR index
+    auto ti1 = clk::now();
+    double idx_rss = 0, idx_peak = 0; read_rss_mb(idx_rss, idx_peak);   // resident memory held by the index
     auto reads = read_fasta(pos[1]); vector<string> out(reads.size());
-    parallel_for(reads.size(), threads, [&](size_t lo, size_t hi) { map_chunk(reads, lo, hi, idx, k, w, theta, delta, out); });
+    auto tm0 = clk::now();
+    parallel_for(reads.size(), threads, [&](size_t lo, size_t hi) { map_chunk(reads, lo, hi, idx, k, w, theta, delta, out); });  // MAP phase
+    auto tm1 = clk::now();
+    size_t mapped = 0; for (const string &line : out) if (!line.empty()) ++mapped;
     for (const string &line : out) std::cout << line;
+    if (std::getenv("MINSHMAP_BENCH")) {                         // stderr-only diagnostics; stdout PAF stays byte-identical
+        auto secs = [](clk::time_point a, clk::time_point b) { return std::chrono::duration<double>(b - a).count(); };
+        double cur = 0, peak = 0; read_rss_mb(cur, peak);
+        std::cerr << "[bench] index_s=" << secs(ti0, ti1) << " map_s=" << secs(tm0, tm1)
+                  << " reads=" << reads.size() << " mapped=" << mapped
+                  << " index_rss_mb=" << idx_rss << " peak_rss_mb=" << peak << "\n";
+    }
     return 0;
 }
