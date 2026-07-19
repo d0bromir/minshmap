@@ -53,6 +53,8 @@ MINIMAP2 = HOME / "bin" / "minimap2"
 MAP_SHMAP = (ROOT / "shmap" / "release" / "shmap").resolve()
 # minshmap == our minimal educational reimplementation (extra, under its own name).
 MINSHMAP = (MINSHMAP_DIR / "minshmap_linux").resolve()
+# shmap-rs == the Rust port of Pesho's shmap (identical CLI + parameters as map-shmap).
+SHMAP_RS = Path(os.environ.get("SHMAP_RS", HOME / "shmap-rs" / "target" / "release" / "shmap"))
 WINNOWMAP = Path(os.environ.get("WINNOWMAP", HOME / "bin" / "winnowmap"))
 MERYL = Path(os.environ.get("MERYL", HOME / "bin" / "meryl"))
 BLEND = Path(os.environ.get("BLEND", HOME / "bin" / "blend"))
@@ -285,6 +287,18 @@ def run_map_shmap(ref, reads, threads, k, r_frac, theta, min_diff, max_overlap):
     return dict(paf=str(paf), index_s=None, map_s=wall, mem_gb=mem / 1024.0)
 
 
+def run_shmap_rs(ref, reads, threads, k, r_frac, theta, min_diff, max_overlap):
+    """shmap-rs == the Rust port of Pesho's shmap. Identical CLI and parameters as
+    map-shmap (k=25, r=0.01, t=0.4, d=0.075, o=0.3, Containment): one sketch+map
+    pass, no separate index. Auto-skips if the binary is not built (e.g. locally)."""
+    need(SHMAP_RS)
+    paf = WORK / "_shmaprs.paf"
+    cmd = (f"{SHMAP_RS} -s {ref} -p {reads} -k {k} -r {r_frac} -t {theta} "
+           f"-d {min_diff} -o {max_overlap} -m Containment > {paf}")
+    _, mem, wall = timed(cmd)
+    return dict(paf=str(paf), index_s=None, map_s=wall, mem_gb=mem / 1024.0)
+
+
 def run_minshmap(ref, reads, threads, k, w, theta):
     """minshmap == our minimal educational reimplementation of shmap (extra tool)."""
     paf = WORK / "_minshmap.paf"
@@ -356,6 +370,9 @@ def run_dataset(ds, args, rows, csv_path, done=None):
         ("map-shmap",  lambda: run_map_shmap(ref, reads, args.threads, args.shmap_k,
                                              args.shmap_r, args.shmap_t,
                                              args.shmap_d, args.shmap_o)),
+        ("shmap-rs",   lambda: run_shmap_rs(ref, reads, args.threads, args.shmap_k,
+                                            args.shmap_r, args.shmap_t,
+                                            args.shmap_d, args.shmap_o)),
     ]
     if not args.no_minshmap:
         runs.append(("minshmap", lambda: run_minshmap(ref, reads, args.threads,

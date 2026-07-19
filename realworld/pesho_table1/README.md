@@ -24,6 +24,7 @@ Mappers from the paper's Table 1 list (plus our reimplementation):
 | **blend** | minimap2 fork with BLEND seeding | optional — auto-skipped if not installed |
 | **mapquik** | fast k-min-mer mapper | optional — auto-skipped if not installed |
 | **map-shmap** | **Pesho's original `shmap` project** — the mapper under evaluation | `shmap/release/shmap` |
+| **shmap-rs** | **Rust port of Pesho's `shmap`** — same CLI and parameters as map-shmap | `~/shmap-rs/target/release/shmap` (auto-skipped if not built) |
 | **minshmap** | our minimal educational reimplementation (extra) | `minshmap/minshmap_linux` |
 
 > **Naming.** In the paper, the row **`map-shmap` is Pesho's original `shmap`**. Our
@@ -163,6 +164,7 @@ Full clean run on the big-RAM host (`results/table1_20260718-103540.csv`, 2026-0
 | blend | 23866 | 50.6% | 191 | 1.4 | 638.4 | 0.56 |
 | mapquik ‡ | 39272 | 13.1% | 3041 | n/a | 18.9 | 1.68 |
 | map-shmap | 22918 | 52.9% | 0 | n/a | 109.9 | 0.38 |
+| shmap-rs | 22918 | 52.9% | 0 | n/a | 94.5 | 0.31 |
 | minshmap | 15694 | 67.8% | 0 | 2.2 | 922.6 | 0.71 |
 
 ### Dataset 2 — whole CHM13v2.0, simulated 10 kbp reads, 1× (242 845 reads)
@@ -174,6 +176,7 @@ Full clean run on the big-RAM host (`results/table1_20260718-103540.csv`, 2026-0
 | blend | 228395 | 5.9% | 138 | 75.4 | 206.9 | 7.45 |
 | mapquik ‡ | 237973 | 1.4% | 1365 | n/a | 168.3 | 4.89 |
 | map-shmap | 228166 | 6.0% | 0 | n/a | 120.3 | 18.85 |
+| shmap-rs | 228165 | 6.0% | 0 | n/a | 120.7 | 15.72 |
 | minshmap | 220345 | 9.3% | 3 | 159.2 | 5094.2 | 10.96 |
 
 ### Dataset 3 — chrY, simulated 24 kbp reads, 10× (25 940 reads)
@@ -185,6 +188,7 @@ Full clean run on the big-RAM host (`results/table1_20260718-103540.csv`, 2026-0
 | blend | 8842 | 62.4% | 912 | 1.5 | 307.2 | 0.56 |
 | mapquik ‡ | 12665 | 30.1% | 5466 | n/a | 18.3 | 1.68 |
 | map-shmap | 6902 | 73.4% | 0 | n/a | 26.8 | 0.37 |
+| shmap-rs | 6902 | 73.4% | 0 | n/a | 24.1 | 0.31 |
 | minshmap | 7515 | 71.0% | 19 | 2.2 | 442.9 | 0.70 |
 
 ### Dataset 4 — whole CHM13v2.0, real HG002 24 kbp reads, 1.6× (2 000 reads, no ground truth)
@@ -196,6 +200,7 @@ Full clean run on the big-RAM host (`results/table1_20260718-103540.csv`, 2026-0
 | blend | 1897 | 5.2% | n/a | 70.8 | 13.2 | 7.45 |
 | mapquik ‡ | 1976 | 1.2% | n/a | n/a | 91.1 | 4.89 |
 | map-shmap | 1876 | 6.2% | n/a | n/a | 32.9 | 18.85 |
+| shmap-rs | 1876 | 6.2% | n/a | n/a | 31.3 | 15.72 |
 | minshmap | 1838 | 8.1% | n/a | 159.1 | 46.0 | 10.96 |
 
 > † **winnowmap2** runs at its hardcoded 3 threads (all other mappers are single-thread).
@@ -225,6 +230,14 @@ Full clean run on the big-RAM host (`results/table1_20260718-103540.csv`, 2026-0
 > **120.3 s / 18.85 GB** (paper 137.1 s / 12.4 GB), chrY 24 kbp **26.8 s / 0.37 GB**
 > (paper 52.1 s / 0.4 GB). See [FINDINGS_FOR_PESHO.md](FINDINGS_FOR_PESHO.md) for the
 > parameter-bug root cause.
+>
+> **shmap-rs** is the Rust port of Pesho's `shmap`, run with the **same CLI and parameters**
+> as map-shmap (`k=25, r=0.01, t=0.4, d=0.075, o=0.3, -m Containment`). It reproduces map-shmap's
+> accuracy essentially exactly — identical on the chrY datasets (22 918 / 6 902 correct, 0 wrong)
+> and within one read on the whole genome (228 165 vs 228 166) — while running slightly faster on
+> the chrY sets (94.5 s vs 109.9 s; 24.1 s vs 26.8 s) and using less peak memory (15.72 GB vs
+> 18.85 GB on the whole-genome runs). Built with `cargo build --release` (stable Rust 1.93,
+> edition 2024); auto-skipped if the binary is absent.
 
 ---
 
