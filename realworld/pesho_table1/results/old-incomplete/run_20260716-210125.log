@@ -1,0 +1,29 @@
+resuming /mnt/c/Users/dobro/OneDrive/Desktop/PhD/Pesho/minshmap/realworld/pesho_table1/results/table1_20260713-143401.csv: 10 cells already done, will skip them
+
+########## Chromosome Y, simulated 10kbp reads with 10x coverage ##########
+staging inputs into /home/dobro/_paper_work ... (ref=chrY.fa, reads=48673)
+
+=== [chrY_sim_10kbp_10x] minimap2 === (skip, already in resume CSV)
+
+=== [chrY_sim_10kbp_10x] winnowmap2 === (skip, already in resume CSV)
+
+=== [chrY_sim_10kbp_10x] blend === (skip, already in resume CSV)
+
+=== [chrY_sim_10kbp_10x] mapquik === (skip, already in resume CSV)
+
+=== [chrY_sim_10kbp_10x] map-shmap === (skip, already in resume CSV)
+
+=== [chrY_sim_10kbp_10x] minshmap === (skip, already in resume CSV)
+
+########## All chromosomes, simulated 10kbp reads with 1x coverage ##########
+staging inputs into /home/dobro/_paper_work ... (ref=hs1.fa, reads=242845)
+
+=== [allchr_sim_10kbp_1x] minimap2 === (skip, already in resume CSV)
+
+=== [allchr_sim_10kbp_1x] winnowmap2 === (skip, already in resume CSV)
+
+=== [allchr_sim_10kbp_1x] blend === (skip, already in resume CSV)
+
+=== [allchr_sim_10kbp_1x] mapquik === (skip, already in resume CSV)
+
+=== [allchr_sim_10kbp_1x] map-shmap ===

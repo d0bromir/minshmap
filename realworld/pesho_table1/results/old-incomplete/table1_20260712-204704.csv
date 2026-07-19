@@ -1,0 +1,6 @@
+dataset,mapper,mapped_q60,q_lt60_or_missed_pct,wrong_q60,index_sec,map_sec,memory_gb,reads
+chrY_sim_10kbp_10x,minimap2,16159,66.8,0,1.9,1284.5,0.62,48673
+chrY_sim_10kbp_10x,winnowmap2,n/a,n/a,n/a,n/a,n/a,n/a,48673
+chrY_sim_10kbp_10x,blend,n/a,n/a,n/a,n/a,n/a,n/a,48673
+chrY_sim_10kbp_10x,mapquik,n/a,n/a,n/a,n/a,n/a,n/a,48673
+chrY_sim_10kbp_10x,map-shmap,29286,39.8,0,n/a,981.8,0.53,48673

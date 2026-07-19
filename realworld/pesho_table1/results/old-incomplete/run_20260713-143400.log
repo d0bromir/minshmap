@@ -1,0 +1,38 @@
+
+########## Chromosome Y, simulated 10kbp reads with 10x coverage ##########
+staging inputs into /home/dobro/_paper_work ... (ref=chrY.fa, reads=48673)
+
+=== [chrY_sim_10kbp_10x] minimap2 ===
+  Mapped Q60=16159  Q<60/missed=66.8%  Wrong Q60=0  Index=5.9s  Map=1582.9s  Mem=0.62GB
+
+=== [chrY_sim_10kbp_10x] winnowmap2 ===
+  Mapped Q60=44751  Q<60/missed=8.0%  Wrong Q60=10  Index=8.2s  Map=82969.0s  Mem=10.16GB
+
+=== [chrY_sim_10kbp_10x] blend ===
+  Mapped Q60=23866  Q<60/missed=50.6%  Wrong Q60=191  Index=5.1s  Map=627.4s  Mem=0.56GB
+
+=== [chrY_sim_10kbp_10x] mapquik ===
+  Mapped Q60=0  Q<60/missed=100.0%  Wrong Q60=0  Index=n/a  Map=16.3s  Mem=2.26GB
+
+=== [chrY_sim_10kbp_10x] map-shmap ===
+  Mapped Q60=29286  Q<60/missed=39.8%  Wrong Q60=0  Index=n/a  Map=1173.0s  Mem=0.53GB
+
+=== [chrY_sim_10kbp_10x] minshmap ===
+  Mapped Q60=15694  Q<60/missed=67.8%  Wrong Q60=0  Index=2.2s  Map=1278.3s  Mem=0.71GB
+
+########## All chromosomes, simulated 10kbp reads with 1x coverage ##########
+staging inputs into /home/dobro/_paper_work ... (ref=hs1.fa, reads=242845)
+
+=== [allchr_sim_10kbp_1x] minimap2 ===
+  Mapped Q60=219985  Q<60/missed=9.4%  Wrong Q60=0  Index=1127.3s  Map=19512.0s  Mem=12.22GB
+
+=== [allchr_sim_10kbp_1x] winnowmap2 ===
+  Mapped Q60=240114  Q<60/missed=1.1%  Wrong Q60=3  Index=370.7s  Map=22865.0s  Mem=6.49GB
+
+=== [allchr_sim_10kbp_1x] blend ===
+  Mapped Q60=228395  Q<60/missed=5.9%  Wrong Q60=138  Index=312.5s  Map=456.5s  Mem=7.45GB
+
+=== [allchr_sim_10kbp_1x] mapquik ===
+  Mapped Q60=0  Q<60/missed=100.0%  Wrong Q60=1  Index=n/a  Map=251.5s  Mem=5.04GB
+
+=== [allchr_sim_10kbp_1x] map-shmap ===
