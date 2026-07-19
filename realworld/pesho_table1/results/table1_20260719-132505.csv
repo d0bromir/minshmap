@@ -1,0 +1,5 @@
+dataset,mapper,mapped_q60,q_lt60_or_missed_pct,wrong_q60,index_sec,map_sec,memory_gb,reads
+chrY_sim_10kbp_10x,mapquik,39272,13.1,3041,n/a,18.9,1.68,48673
+allchr_sim_10kbp_1x,mapquik,237973,1.4,1365,n/a,168.3,4.89,242845
+chrY_sim_24kbp_10x,mapquik,12665,30.1,5466,n/a,18.3,1.68,25940
+allchr_real_24kbp,mapquik,1976,1.2,n/a,n/a,91.1,4.89,2000

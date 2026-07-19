@@ -120,30 +120,37 @@ These are the practical lessons that cost us time; recording them so they don't 
    Table 1 (ours miss slightly more) comes from the **simulated read length/count
    distribution and the IoU > 0.10 correctness threshold**, not from read error.
 
-6. **mapquik is excluded — its binary is miscompiled, not a harness bug.** We first suspected
-   our scoring (mapquik emits `mapq = 0`, so a `mapq ≥ 60` filter discarded everything; that
-   filter was fixed). The real problem is deeper: the `mapquik` we can build from upstream
-   (`mapquik` d304b38 + the `rust-seq2kminmers` fork a409c28 that patches it for recent Rust)
-   produces **incorrect k-min-mers** and maps reads to the wrong place. On the whole genome it
-   gets **1 of 89 930** reads right; on chrY, **5 of 1 731**; and it returns an **empty PAF for
-   an exact 10 kb self-map** that minimap2 places correctly — conclusive evidence the binary is
-   broken, not the harness. It fails the same way in every SIMD/scalar mode (the pure-scalar
-   path core-dumps), and it **cannot be rebuilt** with the toolchains available: current Rust
-   nightly compiles cleanly but stays broken, and `nightly-2023-01-15` can no longer build the
-   crate's edition-2024 dependencies. mapquik is an optional comparison baseline (not the
-   subject of the paper), so it is reported as `n/a`. This does not affect any map-shmap,
-   minshmap, minimap2, winnowmap2, or blend result.
+6. **mapquik builds and works on the latest toolchain — the earlier "miscompiled" verdict was
+   wrong.** We first suspected our scoring (mapquik emits `mapq = 0`, so a `mapq ≥ 60` filter
+   discarded everything; that filter was fixed). We then wrongly concluded the binary itself was
+   miscompiled, because a 10 kb **self-map** run with our default parameters returned an empty
+   PAF. Both of those were **our** mistakes, not mapquik's: mapquik is not designed to self-map,
+   and it needs its own designed parameters (`k=8, l=16, d=0.01, g=100`), not the map-shmap
+   sketch parameters (`k=5, l=31`) we had been passing.
 
-   *Rebuild attempts, exhausted.* We also rebuilt mapquik natively on the big-RAM run host
-   (which has an AVX512 CPU) with a fresh 2026 nightly, from clean upstream clones: the
-   self-map came back **empty again** — identical failure, so it is not a cross-machine or
-   stale-checkout artifact. The two candidate fork revisions (`a00deda`, contemporary with
-   mapquik, and `a409c28`, current) differ by a **single nightly feature-flag rename** with
-   zero logic change, so version skew is ruled out. Reproducing mapquik's original 2023 build
-   environment is blocked because upstream ships **no `Cargo.lock`**, and its dependency tree
-   resolved today pulls heavy modern crates (`bio`, `nalgebra`, `ndarray`, `hashbrown 0.17`)
-   that require edition 2024 and cannot be compiled by a 2023 nightly. Fixing mapquik would
-   need upstream cooperation (a pinned lockfile / a maintained build), which is out of scope.
+   *The genuine upgrade.* Built from upstream (`mapquik` d304b38 + the `rust-seq2kminmers` fork
+   `a409c28`) on **`nightly-2026-02-08`**, the crate needed one mechanical fix: the stdarch
+   intrinsic `_mm512_mask_compressstoreu_epi32` changed its `base_addr` parameter from `*mut u8`
+   to `*mut i32`, so the six compiled call sites in `hpc.rs` / `nthash_avx512_32.rs` were updated
+   (`as *mut u8` → `as *mut i32`). After that the binary compiles cleanly and, run on mapquik's
+   **shipped ecoli example** (100 near-perfect HiFi reads → 4.64 Mb *E. coli* genome) with its
+   designed parameters, it maps **100 / 100 reads, 100 % to the correct position, all MAPQ 60**,
+   in **every** mode — AVX512 (`HpcSimd`), scalar-HPC (`--nosimd`), and scalar-regular
+   (`--nosimd --nohpc`). The pure-scalar path does **not** core-dump. mapquik is therefore a
+   fully working, correct baseline again.
+
+   *The decisive root cause (re-benchmark done).* Beyond the parameters, the real reason every
+   earlier human-genome run looked broken is that **mapquik requires a single-line (unwrapped)
+   reference FASTA.** Our `chrY.fa` is wrapped at 50 chars/line, and mapquik counted the ~1.25 M
+   newlines as sequence bases — parsing chrY as 63 709 229 bp instead of the true 62 460 029 bp,
+   which shifts every target coordinate and lands reads megabases off (39 272 correct collapses
+   to 5). The authors' own scripts use `chm13v2.0.oneline.fa` for exactly this reason. Once the
+   harness unwraps the reference once (cached, not timed) and runs mapquik with its shipped human
+   defaults (`k=5, l=31, d=0.01`), Table 1's `n/a` rows are filled with real numbers (chrY 10 kb:
+   39 272 correct / 3 041 wrong; whole-genome 10 kb: 237 973 / 1 365; chrY 24 kb: 12 665 / 5 466;
+   real HG002 24 kb: 1 976 mapped). mapquik emits MAPQ 0 on human data, so its "Mapped Q60"
+   column counts correctly-placed primary mappings. This never affected any map-shmap, minshmap,
+   minimap2, winnowmap2, or blend result.
 
 ---
 

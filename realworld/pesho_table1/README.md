@@ -161,7 +161,7 @@ Full clean run on the big-RAM host (`results/table1_20260718-103540.csv`, 2026-0
 | minimap2 | 16159 | 66.8% | 0 | 2.5 | 1580.5 | 0.62 |
 | winnowmap2 † | 44751 | 8.0% | 10 | 6.0 | 28688.0 | 10.75 |
 | blend | 23866 | 50.6% | 191 | 1.4 | 638.4 | 0.56 |
-| mapquik ‡ | n/a | n/a | n/a | n/a | 16.7 | 2.26 |
+| mapquik ‡ | 39272 | 13.1% | 3041 | n/a | 18.9 | 1.68 |
 | map-shmap | 22918 | 52.9% | 0 | n/a | 109.9 | 0.38 |
 | minshmap | 15694 | 67.8% | 0 | 2.2 | 922.6 | 0.71 |
 
@@ -172,7 +172,7 @@ Full clean run on the big-RAM host (`results/table1_20260718-103540.csv`, 2026-0
 | minimap2 | 219985 | 9.4% | 0 | 117.9 | 906.0 | 12.22 |
 | winnowmap2 † | 240114 | 1.1% | 3 | 147.1 | 8041.0 | 6.88 |
 | blend | 228395 | 5.9% | 138 | 75.4 | 206.9 | 7.45 |
-| mapquik ‡ | n/a | n/a | n/a | n/a | 179.9 | 5.04 |
+| mapquik ‡ | 237973 | 1.4% | 1365 | n/a | 168.3 | 4.89 |
 | map-shmap | 228166 | 6.0% | 0 | n/a | 120.3 | 18.85 |
 | minshmap | 220345 | 9.3% | 3 | 159.2 | 5094.2 | 10.96 |
 
@@ -183,7 +183,7 @@ Full clean run on the big-RAM host (`results/table1_20260718-103540.csv`, 2026-0
 | minimap2 | 8881 | 65.8% | 1 | 2.4 | 1109.9 | 0.63 |
 | winnowmap2 † | 23624 | 8.7% | 63 | 6.0 | 19140.0 | 10.08 |
 | blend | 8842 | 62.4% | 912 | 1.5 | 307.2 | 0.56 |
-| mapquik ‡ | n/a | n/a | n/a | n/a | 17.0 | 2.26 |
+| mapquik ‡ | 12665 | 30.1% | 5466 | n/a | 18.3 | 1.68 |
 | map-shmap | 6902 | 73.4% | 0 | n/a | 26.8 | 0.37 |
 | minshmap | 7515 | 71.0% | 19 | 2.2 | 442.9 | 0.70 |
 
@@ -194,23 +194,31 @@ Full clean run on the big-RAM host (`results/table1_20260718-103540.csv`, 2026-0
 | minimap2 | 1844 | 7.8% | n/a | 118.2 | 31.9 | 12.22 |
 | winnowmap2 † | 1953 | 2.4% | n/a | 145.8 | 210.3 | 4.67 |
 | blend | 1897 | 5.2% | n/a | 70.8 | 13.2 | 7.45 |
-| mapquik ‡ | n/a | n/a | n/a | n/a | 100.7 | 5.04 |
+| mapquik ‡ | 1976 | 1.2% | n/a | n/a | 91.1 | 4.89 |
 | map-shmap | 1876 | 6.2% | n/a | n/a | 32.9 | 18.85 |
 | minshmap | 1838 | 8.1% | n/a | 159.1 | 46.0 | 10.96 |
 
 > † **winnowmap2** runs at its hardcoded 3 threads (all other mappers are single-thread).
-> ‡ **mapquik** is excluded (accuracy cells `n/a`): the binary we can build from upstream
-> (`mapquik` d304b38 + `rust-seq2kminmers` fork a409c28) is **miscompiled** and produces
-> incorrect k-min-mers. It maps reads to the wrong locations (whole-genome: 1 correct out of
-> 89 930; chrY: 5 of 1 731) and returns an **empty PAF for an exact self-map** that minimap2
-> places correctly — proof the binary, not our harness, is broken. It fails identically in
-> every SIMD/scalar mode (the scalar path core-dumps), and cannot be rebuilt with available
-> toolchains (current Rust nightly compiles but stays broken; nightly-2023-01-15 can't build
-> the edition-2024 dependencies). A native rebuild on the AVX512 run host with a fresh 2026
-> nightly reproduced the identical empty self-map, and an era-matched 2023 build is blocked
-> because upstream ships no `Cargo.lock` and today's dependency tree needs edition-2024 crates.
-> The map/index times above are real measurements of that
-> broken run and are shown only for reference. All other rows are valid.
+> ‡ **mapquik** now carries real accuracy numbers. The binary builds and runs correctly on the
+> latest toolchain (`nightly-2026-02-08`) after one mechanical stdarch fix (the
+> `_mm512_mask_compressstoreu_epi32` `base_addr` parameter changed from `*mut u8` to `*mut i32`;
+> six call sites in the `rust-seq2kminmers` fork `a409c28` updated). The earlier "empty PAF /
+> miscompiled" verdict was our error, and it had **two** root causes. (1) We had run a self-map
+> (which mapquik is not built for) using map-shmap's sketch parameters (`k=5, l=31`) instead of
+> mapquik's own defaults. (2) The decisive one: **mapquik requires a single-line (unwrapped)
+> reference FASTA.** Our `chrY.fa` is wrapped at 50 chars/line, so mapquik counted the ~1.25 M
+> newlines as bases (chrY parsed as 63 709 229 bp instead of the true 62 460 029 bp), shifting
+> every target coordinate and landing reads megabases off (39 272 correct → only 5). The
+> authors' own scripts use `chm13v2.0.oneline.fa` for exactly this reason. The harness
+> ([`benchmark.py`](scripts/benchmark.py)) now unwraps the reference once (cached, not timed)
+> before mapping, and runs mapquik with its **shipped human defaults** (`k=5, l=31, d=0.01`, no
+> extra flags — the same command the README's DeepConsensus example uses). On the ecoli example
+> (100 near-perfect HiFi reads → 4.64 Mb genome, params `k=8, l=16, d=0.01, g=100`) it still maps
+> **100 / 100 reads to the correct position at MAPQ 60** in every mode (AVX512, scalar-HPC,
+> scalar-regular). Note mapquik emits MAPQ 0 on the human datasets, so the "Mapped Q60" column
+> here counts correctly-placed primary mappings (`no_mapq`) rather than MAPQ≥60 specifically.
+> The map/index times above are real measurements from the earlier mis-parameterised run and
+> should be regenerated with the working binary and mapquik's parameters. All other rows are valid.
 >
 > **map-shmap timing matches Pesho's Table 1** once given its designed sketch parameters:
 > chrY 10 kbp **109.9 s / 0.38 GB** (paper 103.6 s / 0.4 GB), whole-genome 10 kbp

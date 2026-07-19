@@ -235,11 +235,38 @@ def run_blend(ref, reads, threads, preset):
     return dict(paf=str(paf), index_s=index_s, map_s=map_s, mem_gb=max(mem_i, mem_m) / 1024.0)
 
 
+def _oneline_fasta(src, dst):
+    """mapquik requires a single-line (unwrapped) reference: a wrapped FASTA makes it
+    treat the embedded newlines as bases, which corrupts every target coordinate (a
+    62.46 Mb chrY is read as 63.71 Mb, so reads land ~megabases off and score wrong).
+    The mapquik authors' own scripts pre-build a ".oneline.fa" for exactly this reason.
+    We unwrap once into WORK and reuse (cached per source by mtime/size)."""
+    src, dst = Path(src), Path(dst)
+    if dst.exists() and dst.stat().st_size > 0 and dst.stat().st_mtime >= src.stat().st_mtime:
+        return dst
+    with open(src) as fi, open(dst, "w") as fo:
+        seq = []
+        for line in fi:
+            if line.startswith(">"):
+                if seq:
+                    fo.write("".join(seq)); fo.write("\n"); seq = []
+                fo.write(line if line.endswith("\n") else line + "\n")
+            else:
+                seq.append(line.strip())
+        if seq:
+            fo.write("".join(seq)); fo.write("\n")
+    return dst
+
+
 def run_mapquik(ref, reads, threads):
     need(MAPQUIK)
+    # mapquik needs an unwrapped (single-line-per-sequence) reference; see _oneline_fasta.
+    # Unwrapping is one-time input prep (as in the authors' scripts) and is NOT timed --
+    # only the mapping call is measured, keeping map_sec comparable to the other mappers.
+    ref_one = _oneline_fasta(ref, WORK / f"_mq_oneline_{Path(ref).name}")
     prefix = WORK / "_mapquik"
     _, mem, wall = timed(
-        f"{MAPQUIK} {reads} --reference {ref} --threads {threads} -p {prefix}")
+        f"{MAPQUIK} {reads} --reference {ref_one} --threads {threads} -p {prefix}")
     return dict(paf=f"{prefix}.paf", index_s=None, map_s=wall, mem_gb=mem / 1024.0)
 
 
