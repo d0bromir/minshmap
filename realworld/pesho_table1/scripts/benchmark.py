@@ -290,13 +290,17 @@ def run_map_shmap(ref, reads, threads, k, r_frac, theta, min_diff, max_overlap):
 def run_shmap_rs(ref, reads, threads, k, r_frac, theta, min_diff, max_overlap):
     """shmap-rs == the Rust port of Pesho's shmap. Identical CLI and parameters as
     map-shmap (k=25, r=0.01, t=0.4, d=0.075, o=0.3, Containment): one sketch+map
-    pass, no separate index. Auto-skips if the binary is not built (e.g. locally)."""
+    pass, no separate index. Unlike the single-threaded C++ shmap, shmap-rs adds a
+    `-@`/`--threads` flag that parallelises the mapping phase (output is byte-identical
+    regardless of thread count); we pass the harness's global --threads. Auto-skips if
+    the binary is not built (e.g. locally)."""
     need(SHMAP_RS)
     paf = WORK / "_shmaprs.paf"
     cmd = (f"{SHMAP_RS} -s {ref} -p {reads} -k {k} -r {r_frac} -t {theta} "
-           f"-d {min_diff} -o {max_overlap} -m Containment > {paf}")
+           f"-d {min_diff} -o {max_overlap} -m Containment -@ {threads} > {paf}")
     _, mem, wall = timed(cmd)
     return dict(paf=str(paf), index_s=None, map_s=wall, mem_gb=mem / 1024.0)
+
 
 
 def run_minshmap(ref, reads, threads, k, w, theta):

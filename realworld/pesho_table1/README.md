@@ -239,6 +239,49 @@ Full clean run on the big-RAM host (`results/table1_20260718-103540.csv`, 2026-0
 > 18.85 GB on the whole-genome runs). Built with `cargo build --release` (stable Rust 1.93,
 > edition 2024); auto-skipped if the binary is absent.
 
+### 5.1 shmap-rs thread scaling (`-@ / --threads`)
+
+shmap-rs gained a multithreaded mapping mode (a reader thread streams the reads, `N` worker
+threads map, the main thread renders — output is **byte-identical** to the single-thread run, so
+accuracy is unchanged). The tables below sweep `-@ N` for `N = 1, 2, 4, 8, 16`, reporting map
+wall-time, speedup versus one thread, and peak memory. Sketching the reference is single-threaded,
+so it acts as a fixed serial floor (Amdahl's law) on the whole-genome sets.
+
+**chrY (mapping-dominated, near-linear scaling):**
+
+| Threads | chrY 10 kbp map s | speedup | GB | chrY 24 kbp map s | speedup | GB |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1  | 94.2 | 1.00× | 0.31 | 24.7 | 1.00× | 0.31 |
+| 2  | 47.8 | 1.97× | 0.59 | 12.6 | 1.96× | 0.59 |
+| 4  | 24.6 | 3.83× | 1.16 | 7.4 | 3.34× | 1.15 |
+| 8  | 13.0 | 7.25× | 2.28 | 4.0 | 6.18× | 2.27 |
+| 16 | 7.3 | 12.9× | 4.53 | 2.5 | 9.88× | 4.52 |
+
+**Whole-genome (serial-sketch + memory-bandwidth limited):**
+
+| Threads | allchr 10 kbp map s | speedup | GB | allchr real 24 kbp map s | speedup | GB |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1  | 120.4 | 1.00× | 15.72 | 32.1 | 1.00× | 15.72 |
+| 2  | 72.9 | 1.65× | 29.66 | 34.8 | 0.92× | 29.66 |
+| 4  | 56.5 | 2.13× | 57.54 | 35.3 | 0.91× | 57.10 |
+| 8  | 51.8 | 2.32× | 113.30 | 44.1 | 0.73× | 112.43 |
+| 16 | 58.1 | 2.07× | 225.05 | 51.9 | 0.62× | 220.92 |
+
+> **32 threads was not benchmarked — it requires too much memory.** Peak RSS on the whole-genome
+> datasets grows by roughly 14.5 GB per worker thread, so 32 threads would need on the order of
+> **~450 GB**, exceeding the 376 GB test machine. In practice the whole-genome run at 32 threads
+> pinned all 376 GB of RAM and spilled into swap, thrashing (CPU utilisation collapsed from
+> ~1570 % to ~250 %) with no wall-time benefit, so the sweep is capped at 16 threads.
+>
+> **Reading the tables:** the chrY sets are mapping-dominated and scale near-linearly — up to
+> **12.9× on 16 threads** (81 % efficiency). The whole-genome sets are limited by the
+> single-threaded reference sketch (a fixed ~25 s floor) plus memory-bandwidth saturation: they
+> plateau around 8 threads and then regress (`allchr 10 kbp` is best at 8 threads, 51.8 s, and
+> slower at 16). `allchr real 24 kbp` has only 2 000 reads, so it is index/sketch-bound and
+> actually gets *slower* with more threads (per-thread overhead outweighs the tiny mapping work).
+> Threading helps most when there are many reads to map against a reference small enough to fit
+> comfortably in memory at the chosen thread count.
+
 ---
 
 ## 6. Notes & limitations
@@ -251,3 +294,54 @@ Full clean run on the big-RAM host (`results/table1_20260718-103540.csv`, 2026-0
   counts confident (mapq 60) mappings only.
 - Whole-genome datasets (2 & 4) map reads against the full 3.18 GB genome and are heavy at
   a single thread; use `--threads N` for practical wall-times.
+
+---
+
+## 7. Benchmark environment
+
+All timings and memory figures in this document were measured on a single shared server ("a2").
+
+### Hardware
+
+| Component | Detail |
+|---|---|
+| CPU | 4 × Intel Xeon Gold 5218 @ 2.30 GHz (Cascade Lake-SP) |
+| Cores / threads | 64 physical cores (16 cores/socket × 4 sockets), 1 thread/core (Hyper-Threading off) |
+| Clock | 1.00 GHz base scaling to 3.90 GHz max turbo |
+| Topology | 4 sockets, 4 NUMA nodes |
+| L3 cache | 88 MiB (4 × 22 MiB) |
+| SIMD | AVX-512: `F`, `CD`, `BW`, `DQ`, `VL`, `VNNI` |
+| RAM | 376 GiB |
+| Swap | 92 GiB |
+
+> The 376 GiB RAM figure is why the shmap-rs thread sweep (§5.1) is capped at 16 threads: at
+> 32 threads the whole-genome runs need on the order of ~450 GiB and thrash on swap.
+
+### Software
+
+| Component | Version |
+|---|---|
+| OS | Ubuntu 24.04.3 LTS |
+| Kernel | 6.8.0-100-generic (x86_64) |
+| gcc / g++ | 13.3.0 |
+| GNU Make | 4.3 |
+| Python | 3.12.3 (pip 26.1.2) |
+| Rust (rustc / cargo) | 1.93.1 (stable, edition 2024) |
+| git | 2.43.0 |
+
+### Mapper versions
+
+| Mapper | Version / build |
+|---|---|
+| minimap2 | 2.28-r1209 |
+| winnowmap2 | 2.03 (with `meryl` for high-frequency k-mer counting) |
+| blend | 1.0 |
+| mapquik | 0.1.0 (nightly-2026-02-08 build; see §5 mapquik footnote) |
+| map-shmap (C++) | Pesho's `shmap`, built via its `Makefile` (`-fopenmp`/`-lpthread` inert — single-thread) |
+| shmap-rs | `cargo build --release` (stable Rust 1.93, edition 2024); multithreaded via `-@/--threads` |
+| minshmap | Python reference implementation |
+
+> The benchmark harness ([`benchmark.py`](scripts/benchmark.py)) uses only the Python standard
+> library and the GNU `/usr/bin/time -v` wrapper (for peak-RSS measurement). Every mapper is run
+> single-threaded for comparability, except **winnowmap2** (its hardcoded 3 threads) and
+> **shmap-rs** when explicitly sweeping `-@ N` (§5.1).
